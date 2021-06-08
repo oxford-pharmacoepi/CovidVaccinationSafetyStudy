@@ -1,0 +1,2797 @@
+source(here("Functions", "Functions.R"))
+
+# link to db tables -----
+person_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       cdm_database_schema,
+                       ".person")))
+observation_period_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       cdm_database_schema,
+                       ".observation_period")))
+visit_occurrence_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       cdm_database_schema,
+                       ".visit_occurrence")))
+condition_occurrence_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       cdm_database_schema,
+                       ".condition_occurrence")))
+drug_era_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       cdm_database_schema,
+                       ".drug_era")))
+concept_ancestor_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       vocabulary_database_schema,
+                       ".concept_ancestor")))
+
+
+
+# specifications ----
+cond.codes<-c("434621", 
+                  "4098292", 
+                  "4125650",  
+                  "317009",   
+                  "313217",   
+                  "443392", 
+                  "201820",
+                  "433736",
+                  "321588",
+                  "316866",
+                  "4030518",
+                  "255573",
+                  "4182210")
+cond.names<-c("autoimmune_disease",
+              "antiphospholipid_syndrome",
+              "thrombophilia",
+              "asthma",
+              "atrial_fibrillation",
+              "malignant_neoplastic_disease",
+              "diabetes_mellitus",
+              "obesity",
+              "heart_disease",
+              "hypertensive_disorder",
+              "renal_impairment",
+              "copd",
+              "dementia")
+# these are the conditions we´ll extract for our table 1
+
+drug.codes<-c("21603933", 
+                  "21603991",
+                  "21602722",
+                  "21600961",
+                  "21601853",
+                  "21601386",
+                  "21602472",
+                  "21603831",
+                  "21602471")
+drug.names<-c("antiinflamatory_and_antirheumatic", 
+                  "coxibs",
+                  "corticosteroids",
+                  "antithrombotic",
+                  "lipid_modifying",
+                  "antineoplastic_immunomodulating",
+                  "hormonal_contraceptives",
+                  "tamoxifen",
+                  "sex_hormones_modulators")
+# these are the medications we´ll extract for our table 1
+
+# instantiate outcome tables -----
+cohort.sql<-list.files(here("OutcomeCohorts", "sql"))
+cohort.sql<-cohort.sql[cohort.sql!="CreateCohortTable.sql"]
+outcome.cohorts<-tibble(id=1:length(cohort.sql),
+                        file=cohort.sql,
+                        name=str_replace(cohort.sql, ".sql", ""))  
+if(create.outcome.cohorts=="FALSE"){
+print(paste0("- Skipping creating outcome cohorts"))
+} else { 
+print(paste0("- Getting outcomes"))
+
+  
+conn <- connect(connectionDetails)
+# create empty cohorts table
+print(paste0("Create empty cohort table")) 
+sql<-readSql(here("OutcomeCohorts", "sql","CreateCohortTable.sql"))
+sql<-SqlRender::translate(sql, targetDialect = targetDialect)
+renderTranslateExecuteSql(conn=conn, 
+                          sql,
+                          cohort_database_schema =  results_database_schema,
+                          cohort_table = cohortTableOutcomes)
+rm(sql)
+
+for(cohort.i in 1:length(outcome.cohorts$id)){
+  
+  working.id<-outcome.cohorts$id[cohort.i]
+
+  print(paste0("- Getting outcome: ", 
+               outcome.cohorts$name[cohort.i],
+              " (", cohort.i, " of ", length(outcome.cohorts$name), ")"))
+  sql<-readSql(here("OutcomeCohorts", "sql",
+                    outcome.cohorts$file[cohort.i])) 
+  sql <- sub("BEGIN: Inclusion Impact Analysis - event.*END: Inclusion Impact Analysis - person", "", sql)
+  
+  sql<-SqlRender::translate(sql, targetDialect = targetDialect)
+  renderTranslateExecuteSql(conn=conn, 
+                          sql, 
+                          cdm_database_schema = cdm_database_schema,
+                          vocabulary_database_schema = vocabulary_database_schema,
+                          target_database_schema = results_database_schema,
+                          results_database_schema = results_database_schema,
+                          target_cohort_table = cohortTableOutcomes,
+                          target_cohort_id = working.id)  
+  }
+disconnect(conn)
+} 
+# link 
+outcome_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableOutcomes)))    
+
+# drop any outcome cohorts with less than 5 people
+outcome.cohorts<-outcome.cohorts %>% 
+  inner_join(outcome_db %>% 
+  group_by(cohort_definition_id) %>% 
+  tally() %>% 
+  collect() %>% 
+  filter(n>5) %>% 
+  select(cohort_definition_id),
+  by=c("id"="cohort_definition_id"))  
+# all those instantiated from outcome diagnostics
+
+# specify which events we´ll also combine with thrombocytopenia ------
+outcome.cohorts.thromb.10_10<-outcome.cohorts %>% 
+  filter(name %in% 
+         c("all stroke","CVST","DIC",
+           "DVT broad","DVT narrow",
+           "VTE broad", "VTE narrow",
+           "PE", "hem stroke",
+           "hepatic vein" ,"intest infarc",
+           "isc stroke", "IVT", "MACE",
+           "MI isc stroke", "PE",
+           "portal vein","splenic infarc",
+           "SVT" , "visc venous","VTE broad" ,"VTE narrow", 
+            "splenic vein", "splenic artery",
+            "splenic infarc", "hepatic artery", 
+                    "intest infarc",
+                     "mesen vein", "CAT"))
+outcome.cohorts.thromb.10_10$name<-paste0(outcome.cohorts.thromb.10_10$name, " (with thrombocytopenia 10 days pre to 10 days post)")
+
+outcome.cohorts.thromb.42_14<-outcome.cohorts %>% 
+  filter(name %in% 
+           c("all stroke","CVST","DIC",
+           "DVT broad","DVT narrow",
+           "VTE broad", "VTE narrow",
+           "PE", "hem stroke",
+           "hepatic vein" ,"intest infarc",
+           "isc stroke", "IVT", "MACE",
+           "MI isc stroke", "PE",
+           "portal vein","splenic infarc",
+           "SVT" , "visc venous","VTE broad" ,"VTE narrow", 
+            "splenic vein", "splenic artery",
+            "splenic infarc", "hepatic artery", 
+                    "intest infarc",
+                     "mesen vein", "CAT"))
+outcome.cohorts.thromb.42_14$name<-paste0(outcome.cohorts.thromb.42_14$name, " (with thrombocytopenia 42 days pre to 14 days post)")
+
+# add to outcomes
+outcome.cohorts<-bind_rows(outcome.cohorts,
+outcome.cohorts.thromb.10_10,
+outcome.cohorts.thromb.42_14)
+
+
+
+# run analysis ----
+# Initiate lists to store output
+Patient.characteristcis<-list() # to collect tables of characteristics
+IR.summary<-list() # to collect incidence rate summaries
+Survival.summary<-list() # to collect incidence
+
+# get study cohorts
+study.cohorts<-list()
+
+if(run.vax.cohorts=="TRUE"){
+study.cohorts.sql.vaccinated<-list.files(here("VaccinatedCohorts", "sql"))
+study.cohorts.sql.vaccinated<-study.cohorts.sql.vaccinated[study.cohorts.sql.vaccinated!="CreateCohortTable.sql"]
+study.cohorts[["vaccinated"]]<-tibble(id=1:length(study.cohorts.sql.vaccinated),
+                        file=study.cohorts.sql.vaccinated,
+                        name=str_replace(study.cohorts.sql.vaccinated, ".sql", "")) %>% 
+  mutate(type="VaccinatedCohorts")
+}
+
+if(run.covid.cohorts=="TRUE"){
+study.cohorts.sql.covid<-list.files(here("CovidCohorts", "sql"))
+study.cohorts.sql.covid<-study.cohorts.sql.covid[study.cohorts.sql.covid!="CreateCohortTable.sql"]
+study.cohorts[["covid"]]<-tibble(id=1:length(study.cohorts.sql.covid),
+                                      file=study.cohorts.sql.covid,
+                                      name=str_replace(study.cohorts.sql.covid, ".sql", ""))%>% 
+  mutate(type="CovidCohorts")
+}
+
+if(run.general.pop.cohorts=="TRUE"){
+  study.cohorts.sql.general.pop<-list.files(here("GeneralPopCohorts", "sql"))
+  study.cohorts.sql.general.pop<-study.cohorts.sql.general.pop[study.cohorts.sql.general.pop!="CreateCohortTable.sql"]
+  study.cohorts[["general.pop"]]<-tibble(id=1:length(study.cohorts.sql.general.pop),
+                                   file=study.cohorts.sql.general.pop,
+                                   name=str_replace(study.cohorts.sql.general.pop, ".sql", ""))%>% 
+    mutate(type="GeneralPopCohorts")
+}
+
+study.cohorts<- bind_rows(study.cohorts) %>% 
+  mutate(id=1:nrow(.))
+
+for(i in 1:length(study.cohorts$id)){ 
+# study population -----
+working.study.cohort<-  study.cohorts %>% filter(id==i) %>% select(name) %>% pull()
+working.study.cohort.type<-  study.cohorts %>% filter(id==i) %>% select(type) %>% pull()
+print(paste0("Running anysis for ", working.study.cohort))  
+  
+# define our study population using the sql in the Cohorts folder
+# the accompanying folder has the jsons for reference (which can be imported into Atlas)
+  
+# The population are identified and added to the cohortTableExposures table in the db
+  
+# connect to database
+conn <- connect(connectionDetails)
+# create empty cohorts table
+print(paste0("Create empty cohort table")) 
+sql<-readSql(here("VaccinatedCohorts", "sql","CreateCohortTable.sql"))
+sql<-SqlRender::translate(sql, targetDialect = targetDialect)
+renderTranslateExecuteSql(conn=conn, 
+                          sql,
+                          cohort_database_schema =  results_database_schema,
+                          cohort_table = cohortTableExposures)
+rm(sql)
+
+# get current exposure population
+sql<-readSql(here(working.study.cohort.type, "sql",
+                  study.cohorts$file[i]))
+sql<-SqlRender::translate(sql, targetDialect = targetDialect)
+sql <- sub("BEGIN: Inclusion Impact Analysis - event.*END: Inclusion Impact Analysis - person", "", sql)
+renderTranslateExecuteSql(conn=conn,
+                          sql,
+                          cdm_database_schema = cdm_database_schema,
+                          target_database_schema = results_database_schema,
+                          target_cohort_table = cohortTableExposures,
+                          results_database_schema = results_database_schema,
+                          vocabulary_database_schema=vocabulary_database_schema,
+                          target_cohort_id = 1)
+disconnect(conn)
+  
+# link to the db
+cohortTableExposures_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableExposures)))
+# cohortTableExposures_db %>% tally()
+
+# Create Pop df ----  
+Pop<-person_db %>% 
+  inner_join(cohortTableExposures_db %>% 
+               select(subject_id,cohort_start_date) %>% 
+               rename("person_id"="subject_id")) %>% 
+  select(person_id,gender_concept_id, 
+            year_of_birth, month_of_birth, day_of_birth,
+            cohort_start_date)  %>% 
+  left_join(observation_period_db %>% 
+     select("person_id",  "observation_period_start_date", "observation_period_end_date") %>% 
+       distinct()) %>% 
+     collect()
+
+# add age -----
+Pop$age<- NA
+if(sum(is.na(Pop$day_of_birth))==0 & sum(is.na(Pop$month_of_birth))==0){
+ # if we have day and month 
+Pop<-Pop %>%
+  mutate(age=floor(as.numeric((ymd(cohort_start_date)-
+                    ymd(paste(year_of_birth,
+                                month_of_birth,
+                                day_of_birth, sep="-"))))/365.25))
+} else { 
+Pop<-Pop %>% 
+  mutate(age= year(cohort_start_date)-year_of_birth)
+}
+
+# only those aged 30 or older ----
+Pop<-Pop %>% 
+  filter(age>=30)
+
+# age groups ----
+Pop<-Pop %>% 
+  mutate(age_gr=ifelse(age>=30 &  age<=44,  "30-44",
+                ifelse(age>=45 & age<=54,  "45-54",
+                ifelse(age>=55 & age<=64,  "55-64",
+                ifelse(age>=65 & age<=74, "65-74", 
+                ifelse(age>=75 & age<=84, "75-84",      
+                ifelse(age>=85, ">=85",
+                       NA))))))) %>% 
+  mutate(age_gr= factor(age_gr, 
+                   levels = c("30-44","45-54", "55-64",
+                              "65-74", "75-84",">=85")))
+table(Pop$age_gr, useNA = "always")
+
+# wider age groups
+Pop<-Pop %>% 
+  mutate(age_gr2=ifelse(age>=30 &  age<=44,  "30-44",
+                 ifelse(age>=45 & age<=64,  "45-64",    
+                 ifelse(age>=55, ">=65",
+                       NA)))) %>% 
+  mutate(age_gr2= factor(age_gr2, 
+                   levels = c("30-44", "45-64",">=65")))
+table(Pop$age_gr2, useNA = "always")
+
+# another alternative set of age groups
+Pop<-Pop %>% 
+  mutate(age_gr3= ifelse(age>=30 &  age<=39,  "30-39",
+                ifelse(age>=40 &  age<=49,  "40-49",
+                ifelse(age>=50 &  age<=59,  "50-59",
+                ifelse(age>=60 & age<=69,  "60-69",
+                ifelse(age>=70 & age<=79,  "70-79",      
+                ifelse(age>=80, ">=80",
+                       NA))))))) %>% 
+  mutate(age_gr3= factor(age_gr3, 
+                   levels = c("30-39","40-49", "50-59",
+                              "60-69", "70-79",">=80")))
+table(Pop$age_gr3, useNA = "always")
+
+
+# add gender -----
+#8507 male
+#8532 female
+Pop<-Pop %>% 
+  mutate(gender= ifelse(gender_concept_id==8507, "Male",
+                 ifelse(gender_concept_id==8532, "Female", NA ))) %>% 
+  mutate(gender= factor(gender, 
+                   levels = c("Male", "Female")))
+table(Pop$gender, useNA = "always")
+
+# if missing age or gender, drop ----
+Pop<-Pop %>% 
+  filter(!is.na(age))
+
+Pop<-Pop %>% 
+  filter(!is.na(gender))
+
+
+
+# add prior observation time -----
+Pop<-Pop %>%  
+  mutate(prior_obs_days=as.numeric(difftime(cohort_start_date,
+                                          observation_period_start_date,
+                                        units="days"))) %>% 
+  mutate(prior_obs_years=prior_obs_days/365.25)
+
+
+# condition history ------
+
+# add the concept ids of interest to the cohortTableProfiles table in the results 
+# schema in the cdm
+# these will be the code of interest and all of its descendants
+
+# get any instances over prior history
+# for everyone in the database (everyone in the condition_occurrence table),
+# left_join to population of interest we´ve established
+
+print(paste0("-- Getting codes for conditions"))
+conn<-connect(connectionDetails)
+# table with all the concept ids of interest (code and descendants)
+insertTable(connection=conn,
+            tableName=paste0(results_database_schema, ".",cohortTableProfiles),
+            data=data.frame(condition_id=integer(), concept_id =integer()),
+            createTable = TRUE,
+            progressBar=FALSE)
+for(n in 1:length(cond.codes)){ # add codes for each condition
+working.code<-cond.codes[n]
+working.name<-cond.names[n]
+sql<-paste0("INSERT INTO ", results_database_schema, ".",cohortTableProfiles, " (condition_id, concept_id) SELECT DISTINCT ", n ,", descendant_concept_id FROM ", vocabulary_database_schema, ".concept_ancestor WHERE ancestor_concept_id IN (",working.code, ");")
+suppressMessages(executeSql(conn, sql, progressBar = FALSE))
+}
+
+#link to table
+cohortTableProfiles_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableProfiles)))
+print(paste0("-- Getting conditions for study population"))
+
+#people with at least one of the conditions
+cond.persons <- condition_occurrence_db %>%
+  select(person_id, condition_concept_id, condition_start_date) %>% 
+  inner_join(cohortTableProfiles_db ,
+             by=c("condition_concept_id"="concept_id")) %>% 
+  inner_join(cohortTableExposures_db %>% 
+               select(subject_id, cohort_start_date) %>% 
+               rename("person_id"="subject_id"),
+             by = "person_id") %>% 
+  filter(condition_start_date < cohort_start_date) %>% 
+  select(person_id, condition_id) %>% 
+  distinct() %>% 
+  collect() 
+
+# add each condition to pop
+for(n in 1:length(cond.codes)){# add each to Pop
+working.code<-cond.codes[n]
+working.name<-cond.names[n]
+
+working.persons <- cond.persons %>% 
+  filter(condition_id==n) %>% 
+  select(person_id) %>% 
+  mutate(working.cond=1)
+
+if(nrow(working.persons)>0){
+Pop<-Pop %>%
+  left_join(working.persons,
+             by = "person_id") %>% 
+  rename(!!working.name:="working.cond")
+} else {
+ Pop$working.cond<-0
+ Pop<-Pop %>% 
+  rename(!!working.name:="working.cond")
+}
+
+}
+disconnect(conn)
+
+#to zero if absent
+Pop<-Pop %>%
+  mutate(across(all_of(cond.names), ~ replace_na(.x, 0)))
+
+
+# medication history ----
+# 183 days prior to four days prior index date
+
+print(paste0("-- Getting codes for medications"))
+conn<-connect(connectionDetails)
+# table with all the concept ids of interest (code and descendants)
+insertTable(connection=conn,
+            tableName=paste0(results_database_schema, ".",cohortTableProfiles),
+            data=data.frame(drug_id=integer(), concept_id =integer()),
+            createTable = TRUE,
+            progressBar=FALSE)
+for(n in 1:length(drug.codes)){ # add codes for each condition
+working.code<-drug.codes[n]
+working.name<-drug.names[n]
+sql<-paste0("INSERT INTO ", results_database_schema, ".",cohortTableProfiles, " (drug_id, concept_id) SELECT DISTINCT ", n ,", descendant_concept_id FROM ", vocabulary_database_schema, ".concept_ancestor WHERE ancestor_concept_id IN (",working.code, ");")
+suppressMessages(executeSql(conn, sql, progressBar = FALSE))
+}
+
+#link to table
+cohortTableProfiles_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableProfiles)))
+print(paste0("-- Getting  medications for study population"))
+
+med.persons <- drug_era_db %>%
+        filter(drug_era_start_date>as.Date("2015-01-01")) %>%  
+  select(person_id, drug_concept_id, drug_era_start_date, drug_era_end_date) %>% 
+  inner_join(cohortTableProfiles_db ,
+             by=c("drug_concept_id"="concept_id")) %>% 
+  inner_join(cohortTableExposures_db %>% 
+               select(subject_id, cohort_start_date) %>% 
+               rename("person_id"="subject_id"),
+             by = "person_id") %>% 
+  filter(drug_era_start_date < cohort_start_date) %>% 
+  select(person_id, drug_id, drug_era_start_date, drug_era_end_date,
+         cohort_start_date) %>% 
+  distinct() %>% 
+  collect() %>%
+  filter(drug_era_start_date<=(cohort_start_date-days(4))
+          & drug_era_start_date>=(cohort_start_date-days(183)) |
+           drug_era_end_date<=(cohort_start_date-days(4))
+                 & drug_era_end_date>=(cohort_start_date-days(183))) %>% 
+  select(person_id, drug_id) %>% 
+  distinct() 
+
+
+
+for(n in 1:length(drug.codes)){# extract condition info and add to Pop
+working.code<-drug.codes[n]
+working.name<-drug.names[n]
+working.persons <- med.persons %>% 
+  filter(drug_id==n) %>% 
+  select(person_id) %>% 
+  mutate(working.drug=1)
+
+if(nrow(working.persons)>0){
+Pop<-Pop %>%
+  left_join(working.persons,
+             by = "person_id") %>% 
+  rename(!!working.name:="working.drug")
+} else {
+ Pop$working.drug<-0
+ Pop<-Pop %>% 
+  rename(!!working.name:="working.drug")
+}
+
+}
+disconnect(conn)
+
+#to zero if absent
+Pop<-Pop %>%
+  mutate(across(all_of(drug.names), ~ replace_na(.x, 0)))
+
+
+# summarise characteristics -----
+get.summary.characteristics<-function(working.data, working.name){
+summary.characteristics<-bind_rows(
+data.frame(Overall=t(working.data %>% 
+  mutate(index_year=year(cohort_start_date)) %>% 
+  summarise(n=nice.num.count(length(person_id)),
+    age=paste0(nice.num.count(median(age)),  " [",
+                     nice.num.count(quantile(age,probs=0.25)),  " to ",
+                     nice.num.count(quantile(age,probs=0.75)),   "]" ),
+    sex.male=paste0(nice.num.count(sum(gender=="Male")),
+                    " (",  nice.num((sum(gender=="Male")/length(person_id))*100),
+    "%)"),
+  prior_obs_years=paste0(nice.num(median(prior_obs_years)),
+                     " [", nice.num(quantile(prior_obs_years,probs=0.25)), 
+                     " to ", nice.num(quantile(prior_obs_years,probs=0.75)),   "]" ))
+  )),
+# and all the conds and medications
+data.frame(Overall=t(working.data %>% 
+  summarise_at(.vars = all_of(c(cond.names, drug.names)), 
+               .funs = function(x, tot){
+  paste0(nice.num.count(sum(x)), " (", nice.num((sum(x)/tot)*100), "%)")
+} , tot=nrow(working.data))) ))
+summary.characteristics$Overall<-as.character(summary.characteristics$Overall)
+
+rownames(summary.characteristics)<-str_to_sentence(rownames(summary.characteristics))
+rownames(summary.characteristics)<-str_replace(rownames(summary.characteristics),
+                                      "Sex.male", "Sex: Male")
+rownames(summary.characteristics)<-str_replace(rownames(summary.characteristics),
+                                      "Prior_obs_years", "Years of prior observation time")
+rownames(summary.characteristics)<-str_replace_all(rownames(summary.characteristics) , "_", " ")
+
+#obscure any counts less than 5
+summary.characteristics$Overall<-
+  ifelse(str_sub(summary.characteristics$Overall, 1, 2) %in%  c("1 ","2 ", "3 ","4 "),
+              "<5",summary.characteristics$Overall)
+summary.characteristics$var<-row.names(summary.characteristics)
+row.names(summary.characteristics)<-1:nrow(summary.characteristics)
+
+summary.characteristics %>% 
+  select(var, Overall) %>% 
+  rename(!!working.name:=Overall)
+
+
+}
+
+# overall
+Pop.summary.characteristics<-get.summary.characteristics(Pop, "Overall")
+# overall, age_gr2
+Pop.summary.characteristics.age_gr2.1<-get.summary.characteristics(Pop %>% 
+                                                        filter(age_gr2=="30-44"), 
+                                                         "Overall")
+
+Pop.summary.characteristics.age_gr2.2<-get.summary.characteristics(Pop %>% 
+                                                           filter(age_gr2=="45-64"), 
+                                                         "Overall")
+Pop.summary.characteristics.age_gr2.3<-get.summary.characteristics(Pop %>% 
+                                                           filter(age_gr2==">=65"), 
+                                                         "Overall")
+
+# december 2020
+if(working.study.cohort.type== "VaccinatedCohorts"){
+Pop.summary.characteristics.december<-get.summary.characteristics(
+  Pop %>% 
+    filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+    filter(cohort_start_date<=as.Date("2020-12-31")),
+  "Overall")
+Pop.summary.characteristics.december.age_gr2.1<-get.summary.characteristics(Pop %>% 
+                                                                           filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                           filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                     filter(age_gr2=="30-44"), 
+                                                                   "Overall")
+Pop.summary.characteristics.december.age_gr2.2<-get.summary.characteristics(Pop %>% 
+                                                                           filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                           filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                     filter(age_gr2=="45-64"), 
+                                                                   "Overall")
+Pop.summary.characteristics.december.age_gr2.3<-get.summary.characteristics(Pop %>% 
+                                                                           filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                           filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                     filter(age_gr2==">=65"), 
+                                                                   "Overall")
+
+# january
+Pop.summary.characteristics.january<-get.summary.characteristics(
+                                   Pop %>% 
+                                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                                          "Overall")
+Pop.summary.characteristics.january.age_gr2.1<-get.summary.characteristics(Pop %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>% 
+                                                                           filter(age_gr2=="30-44"), 
+                                                                            "Overall")
+Pop.summary.characteristics.january.age_gr2.2<-get.summary.characteristics(Pop %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>%
+                                                                           filter(age_gr2=="45-64"), 
+                                                                            "Overall")
+Pop.summary.characteristics.january.age_gr2.3<-get.summary.characteristics(Pop %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>%
+                                                                           filter(age_gr2==">=65"), 
+                                                                            "Overall")
+
+# february
+Pop.summary.characteristics.february<-get.summary.characteristics(
+  Pop %>% 
+    filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+    filter(cohort_start_date<=as.Date("2021-02-28")),
+  "Overall")
+Pop.summary.characteristics.february.age_gr2.1<-get.summary.characteristics(Pop %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                            filter(age_gr2=="30-44"), 
+                                                                           "Overall")
+Pop.summary.characteristics.february.age_gr2.2<-get.summary.characteristics(Pop %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                            filter(age_gr2=="45-64"), 
+                                                                           "Overall")
+Pop.summary.characteristics.february.age_gr2.3<-get.summary.characteristics(Pop %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                            filter(age_gr2==">=65"), 
+                                                                           "Overall")
+}
+
+# those with a year of prior history
+Pop.summary.characteristics.with.history<-get.summary.characteristics(
+                                   Pop %>% filter(prior_obs_years>=1),
+                                          "Overall")
+
+
+# overall, age_gr2
+Pop.summary.characteristics.age_gr2.1.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                     filter(age_gr2=="30-44"), 
+                                                                   "Overall")
+Pop.summary.characteristics.age_gr2.2.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                     filter(age_gr2=="45-64"), 
+                                                                   "Overall")
+Pop.summary.characteristics.age_gr2.3.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                     filter(age_gr2==">=65"), 
+                                                                   "Overall")
+
+if(working.study.cohort.type== "VaccinatedCohorts"){
+# december
+Pop.summary.characteristics.december.with.history<-get.summary.characteristics(
+  Pop %>% filter(prior_obs_years>=1) %>% 
+    filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+    filter(cohort_start_date<=as.Date("2020-12-31")),
+  "Overall")
+Pop.summary.characteristics.december.age_gr2.1.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                              filter(age_gr2=="30-44"), 
+                                                                            "Overall")
+Pop.summary.characteristics.december.age_gr2.2.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                              filter(age_gr2=="45-64"), 
+                                                                            "Overall")
+Pop.summary.characteristics.december.age_gr2.3.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                              filter(age_gr2==">=65"), 
+                                                                            "Overall")
+
+
+# january
+Pop.summary.characteristics.january.with.history<-get.summary.characteristics(
+  Pop %>% filter(prior_obs_years>=1) %>% 
+    filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+    filter(cohort_start_date<=as.Date("2021-01-31")),
+  "Overall")
+Pop.summary.characteristics.january.age_gr2.1.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>% 
+                                                                             filter(age_gr2=="30-44"), 
+                                                                           "Overall")
+Pop.summary.characteristics.january.age_gr2.2.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>%
+                                                                             filter(age_gr2=="45-64"), 
+                                                                           "Overall")
+Pop.summary.characteristics.january.age_gr2.3.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")) %>%
+                                                                             filter(age_gr2==">=65"), 
+                                                                           "Overall")
+
+# february
+Pop.summary.characteristics.february.with.history<-get.summary.characteristics(
+  Pop %>% filter(prior_obs_years>=1) %>% 
+    filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+    filter(cohort_start_date<=as.Date("2021-02-28")),
+  "Overall")
+Pop.summary.characteristics.february.age_gr2.1.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                              filter(age_gr2=="30-44"), 
+                                                                            "Overall")
+Pop.summary.characteristics.february.age_gr2.2.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                              filter(age_gr2=="45-64"), 
+                                                                            "Overall")
+Pop.summary.characteristics.february.age_gr2.3.with.history<-get.summary.characteristics(Pop %>% filter(prior_obs_years>=1) %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")) %>%
+                                                                              filter(age_gr2==">=65"), 
+                                                                            "Overall")
+}
+
+
+# results for each outcome of interest -----
+for(j in 1:length(outcome.cohorts$id)){ # for each outcome of interest
+working.outcome<-outcome.cohorts$id[j]
+working.outcome.name<-outcome.cohorts$name[j]
+
+print(paste0("- Getting ", working.outcome.name,
+        " (", j, " of ", length(outcome.cohorts$id), ")"))
+working.Pop<-Pop 
+  
+# drop time-varying covariates, we will get them again for the index date of the event 
+working.Pop<-working.Pop %>% 
+  select(-age, age_gr, age_gr2, age_gr2, prior_obs_years) %>% 
+  select(-all_of(cond.names)) %>% 
+  select(-all_of(drug.names))
+
+# event of interest
+if(working.outcome.name=="imm throm"){
+  # for imm throm, either this specific cohort based on diagnosis codes or HIT (which included drug eras)
+ ids<-c(outcome.cohorts %>% 
+          filter(name=="HIT") %>% 
+          select(id) %>% pull(),
+        working.outcome)
+  working.outcomes<-outcome_db %>%
+    filter(cohort_definition_id %in% 
+             ids) %>%
+    select(subject_id, cohort_start_date) %>% 
+    collect()
+} else {
+working.outcomes<-outcome_db %>%
+  filter(cohort_definition_id %in% working.outcome) %>%
+  select(subject_id, cohort_start_date) %>% 
+  collect()
+}
+
+# thrombocytopenia window
+if(str_detect(working.outcome.name, "(with thrombocytopenia 10 days pre to 10 days post)")){
+  thrombocyt.id<-outcome.cohorts %>% 
+                   filter(name=="thrombocyt") %>% 
+                   select(id) %>% pull() 
+  thromb.outcomes<-outcome_db %>%
+    filter(cohort_definition_id ==thrombocyt.id) %>% 
+    select(subject_id, cohort_start_date) %>% 
+    rename("thromb.date"="cohort_start_date") %>% 
+    collect()
+  # find any outcomes with thrombocytopenia also observed
+  working.outcomes<-working.outcomes %>% 
+    inner_join(thromb.outcomes)
+  # find any outcomes with thrombocytopenia in the time window
+  working.outcomes$dtime<-as.numeric(difftime(working.outcomes$thromb.date,
+                                              working.outcomes$cohort_start_date, units="days"))
+  working.outcomes<-working.outcomes %>% 
+    filter(dtime>=(-10)) %>% 
+    filter(dtime<=10)
+  
+  working.outcomes<-working.outcomes %>% 
+    select(-dtime) %>% 
+    select(-thromb.date)
+}
+
+if(str_detect(working.outcome.name, "(with thrombocytopenia 42 days pre to 14 days post)")){
+  thrombocyt.id<-outcome.cohorts %>% 
+    filter(name=="thrombocyt") %>% 
+    select(id) %>% pull() 
+  thromb.outcomes<-outcome_db %>%
+    filter(cohort_definition_id ==thrombocyt.id) %>% 
+    select(subject_id, cohort_start_date) %>% 
+    rename("thromb.date"="cohort_start_date") %>% 
+    collect()
+  # find any outcomes with thrombocytopenia also observed
+  working.outcomes<-working.outcomes %>% 
+    inner_join(thromb.outcomes)
+  # find any outcomes with thrombocytopenia in the time window
+  working.outcomes$dtime<-as.numeric(difftime(working.outcomes$thromb.date,
+                                              working.outcomes$cohort_start_date, units="days"))
+  working.outcomes<-working.outcomes %>% 
+    filter(dtime>=(-42)) %>% 
+    filter(dtime<=14)
+  
+  working.outcomes<-working.outcomes %>% 
+    select(-dtime) %>% 
+    select(-thromb.date)
+}
+
+# any occurrences
+if(working.outcomes %>%  
+  inner_join(working.Pop %>% 
+               select(person_id) %>% 
+               rename("subject_id"="person_id")) %>% 
+  tally() %>% 
+  pull()==0){
+  print(paste0("No occurrences of ", working.outcome.name, " among study population"))
+} else {
+  # continue only if occurrences of outcome
+
+# drop anyone with the outcome in the year prior to the index ------
+washout.outcomes<-working.outcomes %>% 
+  inner_join(working.Pop %>% 
+               select(person_id,cohort_start_date) %>% 
+               rename("subject_id"="person_id") %>% 
+               rename("Pop_cohort_start_date"="cohort_start_date")) %>% 
+  filter(cohort_start_date>= (Pop_cohort_start_date-years(1))) %>% 
+  filter(cohort_start_date<= Pop_cohort_start_date) 
+
+working.Pop<-working.Pop %>% 
+  anti_join(washout.outcomes %>% 
+  select(subject_id) %>% 
+  distinct(),
+  by=c("person_id"="subject_id"))  
+  
+# history of outcome event -----
+history.outcomes<-working.outcomes %>%  
+  inner_join(working.Pop %>% 
+               select(person_id,cohort_start_date) %>% 
+               rename("subject_id"="person_id") %>% 
+               rename("Pop_cohort_start_date"="cohort_start_date")) %>% 
+  filter(cohort_start_date< (Pop_cohort_start_date-years(1))) 
+working.Pop<-working.Pop %>% 
+  left_join(history.outcomes  %>% 
+  select(subject_id) %>% 
+  distinct() %>% 
+  mutate(history_outcome=1),
+  by=c("person_id"="subject_id"))
+working.Pop<-working.Pop %>% 
+  mutate(history_outcome=ifelse(is.na(history_outcome),0,1))
+
+
+# first event after index date up to  -----
+
+# for vaccinated: outcomes over 28 days from index
+if(working.study.cohort.type=="VaccinatedCohorts"){
+f_u.outcome<-working.outcomes %>%  
+  inner_join(working.Pop %>% 
+               select(person_id,cohort_start_date) %>% 
+               rename("subject_id"="person_id") %>% 
+               rename("Pop_cohort_start_date"="cohort_start_date"))  %>% 
+  filter(cohort_start_date> Pop_cohort_start_date) %>% 
+  filter(cohort_start_date<= (Pop_cohort_start_date+days(28))) 
+}
+
+# for covid: outcomes over 90 days from index
+if(working.study.cohort.type=="CovidCohorts"){
+  f_u.outcome<-working.outcomes %>%  
+    inner_join(working.Pop %>% 
+                 select(person_id,cohort_start_date) %>% 
+                 rename("subject_id"="person_id") %>% 
+                 rename("Pop_cohort_start_date"="cohort_start_date"))  %>% 
+    filter(cohort_start_date> Pop_cohort_start_date) %>% 
+    filter(cohort_start_date<= (Pop_cohort_start_date+days(90))) 
+}
+
+
+if(working.study.cohort.type=="GeneralPopCohorts"){
+  f_u.outcome<-working.outcomes %>%  
+    inner_join(working.Pop %>% 
+                 select(person_id,cohort_start_date) %>% 
+                 rename("subject_id"="person_id") %>% 
+                 rename("Pop_cohort_start_date"="cohort_start_date"))  %>% 
+    filter(as.Date(cohort_start_date)> as.Date(Pop_cohort_start_date)) %>% 
+    filter(as.Date(cohort_start_date)<= as.Date(dmy(paste0("31-12-","2019"))))
+           }
+
+
+
+if(nrow(f_u.outcome)>=5){ # 5 or more cases
+f_u.outcome<-f_u.outcome %>% 
+  group_by(subject_id) %>%
+  arrange(cohort_start_date) %>% 
+  mutate(seq=1:length(subject_id)) %>% 
+  filter(seq==1) %>% 
+  select(subject_id,cohort_start_date)  %>% 
+  rename("f_u.outcome_date"="cohort_start_date") %>% 
+  mutate(f_u.outcome=1)
+working.Pop<-working.Pop %>% 
+  left_join(f_u.outcome,
+  by=c("person_id"="subject_id"))
+working.Pop<-working.Pop %>% 
+  mutate(f_u.outcome=ifelse(is.na(f_u.outcome),0,1))
+
+
+# TAR -----
+# VaccinatedCohorts: censor at first of outcome, end of observation period, 28 days
+if(working.study.cohort.type=="VaccinatedCohorts"){
+working.Pop<-working.Pop %>%
+  mutate(f_u.outcome_date=if_else(f_u.outcome==1,
+                                  f_u.outcome_date, 
+                               if_else(observation_period_end_date < (cohort_start_date+days(28)),
+                                       observation_period_end_date, 
+                                       (cohort_start_date+days(28)) )))}
+# CovidCohorts: censor at first of outcome, end of observation period, 90 days
+if(working.study.cohort.type=="CovidCohorts"){
+  working.Pop<-working.Pop %>%
+    mutate(f_u.outcome_date=if_else(f_u.outcome==1,
+                                    f_u.outcome_date, 
+                                    if_else(observation_period_end_date < (cohort_start_date+days(90)),
+                                            observation_period_end_date, 
+                                            (cohort_start_date+days(90)) )))}
+# GeneralPopCohorts: censor at first of outcome, end of observation period, end date
+if(working.study.cohort.type=="GeneralPopCohorts"){
+  working.Pop<-working.Pop %>%
+    mutate(f_u.outcome_date=if_else(f_u.outcome==1,
+                                    f_u.outcome_date, 
+                                    if_else(observation_period_end_date < as.Date(dmy(paste0("31-12-","2019"))),
+                                            observation_period_end_date, 
+                                            as.Date(dmy(paste0("31-12-","2019"))) )))
+  }
+
+
+
+working.Pop<-working.Pop %>% 
+  mutate(f_u.outcome.days=as.numeric(difftime(f_u.outcome_date,
+                                              cohort_start_date, 
+                                                   units="days")))
+# table(is.na(working.Pop$f_u.outcome.days))
+# quantile(working.Pop$f_u.outcome.days)
+
+# require minimum of 1 day of risk for working outcome ----
+working.Pop<-working.Pop %>% 
+  filter(f_u.outcome.days>0)
+
+# characteristics ----
+working.Pop.w.outcome<-working.Pop %>% filter(f_u.outcome==1) 
+
+# add age and gender -----
+working.Pop.w.outcome$age<- NA
+if(sum(is.na(working.Pop.w.outcome$day_of_birth))==0 & sum(is.na(working.Pop.w.outcome$month_of_birth))==0){
+ # if we have day and month 
+working.Pop.w.outcome<-working.Pop.w.outcome %>%
+  mutate(age=floor(as.numeric((ymd(cohort_start_date)-
+                    ymd(paste(year_of_birth,
+                                month_of_birth,
+                                day_of_birth, sep="-"))))/365.25))
+} else { 
+working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  mutate(age= year(cohort_start_date)-year_of_birth)
+}
+
+working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  mutate(age_gr=ifelse(age>=30 &  age<=44,  "30-44",
+                ifelse(age>=45 & age<=54,  "45-54",
+                ifelse(age>=55 & age<=64,  "55-64",
+                ifelse(age>=65 & age<=74, "65-74", 
+                ifelse(age>=75 & age<=84, "75-84",      
+                ifelse(age>=85, ">=85",NA))))))) %>% 
+  mutate(age_gr= factor(age_gr, 
+                        levels = c("30-44","45-54", "55-64",
+                                   "65-74", "75-84",">=85")))
+table(Pop$age_gr, useNA = "always")
+
+
+# wider age groups
+working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  mutate(age_gr2=ifelse(age>=30 &  age<=44,  "30-44",
+                        ifelse(age>=45 & age<=64,  "45-64",    
+                               ifelse(age>=55, ">=65",
+                                      NA)))) %>% 
+  mutate(age_gr2= factor(age_gr2, 
+                         levels = c("30-44", "45-64",">=65")))
+
+# another alternative set of age groups
+working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  mutate(age_gr3= ifelse(age>=30 &  age<=39,  "30-39",
+                  ifelse(age>=40 &  age<=49,  "40-49",
+                  ifelse(age>=50 &  age<=59,  "50-59",
+                  ifelse(age>=60 & age<=69,  "60-69",
+                  ifelse(age>=70 & age<=79,  "70-79",      
+                  ifelse(age>=80, ">=80",NA))))))) %>% 
+  mutate(age_gr3= factor(age_gr3, 
+                         levels = c("30-39","40-49", "50-59",
+                                    "60-69", "70-79",">=80")))
+
+# add prior observation time -----
+working.Pop.w.outcome<-working.Pop.w.outcome %>%  
+  mutate(prior_obs_days=as.numeric(difftime(f_u.outcome_date,
+                                          observation_period_start_date,
+                                        units="days"))) %>% 
+  mutate(prior_obs_years=prior_obs_days/365.25)
+
+
+# condition history -----
+print(paste0("-- Getting codes for conditions"))
+conn<-connect(connectionDetails)
+# table with all the concept ids of interest (code and descendants)
+insertTable(connection=conn,
+            tableName=paste0(results_database_schema, ".",cohortTableProfiles),
+            data=data.frame(condition_id=integer(), concept_id =integer()),
+            createTable = TRUE,
+            progressBar=FALSE)
+for(n in 1:length(cond.codes)){ # add codes for each condition
+working.code<-cond.codes[n]
+working.name<-cond.names[n]
+sql<-paste0("INSERT INTO ", results_database_schema, ".",cohortTableProfiles, " (condition_id, concept_id) SELECT DISTINCT ", n ,", descendant_concept_id FROM ", vocabulary_database_schema, ".concept_ancestor WHERE ancestor_concept_id IN (",working.code, ");")
+suppressMessages(executeSql(conn, sql, progressBar = FALSE))
+}
+
+#link to table
+cohortTableProfiles_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableProfiles)))
+print(paste0("-- Getting  conditions"))
+
+cond.persons <- outcome_db %>% 
+  filter(cohort_definition_id==working.outcome) %>% 
+  select(subject_id, cohort_start_date) %>% 
+  distinct() %>% 
+  left_join(condition_occurrence_db,
+            by=c("subject_id"="person_id")
+            ) %>% 
+  rename("person_id"="subject_id")  %>%
+  select(person_id, condition_concept_id, condition_start_date) %>% 
+  inner_join(cohortTableProfiles_db ,
+             by=c("condition_concept_id"="concept_id")) %>% 
+  inner_join(cohortTableExposures_db %>% 
+               select(subject_id, cohort_start_date) %>% 
+               rename("person_id"="subject_id"),
+             by = "person_id") %>% 
+  filter(condition_start_date < cohort_start_date) %>% 
+  select(person_id, condition_id) %>% 
+  distinct() %>% 
+  collect() 
+
+
+for(n in 1:length(cond.codes)){# extract condition info and add to working.Pop.w.outcome
+working.code<-cond.codes[n]
+working.name<-cond.names[n]
+working.persons <-   cond.persons %>% 
+  filter(condition_id==n) %>% 
+  select(person_id) %>% 
+  mutate(working.cond=1)
+
+if(nrow(working.persons)>0){
+working.Pop.w.outcome<-working.Pop.w.outcome %>%
+  left_join(working.persons,
+             by = "person_id") %>% 
+  rename(!!working.name:="working.cond")
+} else {
+ working.Pop.w.outcome$working.cond<-0
+ working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  rename(!!working.name:="working.cond")
+}
+
+}
+disconnect(conn)
+
+
+#to zero if absent
+working.Pop.w.outcome<-working.Pop.w.outcome %>%
+  mutate(across(all_of(cond.names), ~ replace_na(.x, 0)))
+
+# medication history -----
+print(paste0("-- Getting codes for medications"))
+conn<-connect(connectionDetails)
+# table with all the concept ids of interest (code and descendants)
+insertTable(connection=conn,
+            tableName=paste0(results_database_schema, ".",cohortTableProfiles),
+            data=data.frame(drug_id=integer(), concept_id =integer()),
+            createTable = TRUE,
+            progressBar=FALSE)
+for(n in 1:length(drug.codes)){ # add codes for each condition
+working.code<-drug.codes[n]
+working.name<-drug.names[n]
+sql<-paste0("INSERT INTO ", results_database_schema, ".",cohortTableProfiles, " (drug_id, concept_id) SELECT DISTINCT ", n ,", descendant_concept_id FROM ", vocabulary_database_schema, ".concept_ancestor WHERE ancestor_concept_id IN (",working.code, ");")
+suppressMessages(executeSql(conn, sql, progressBar = FALSE))
+}
+
+
+print(paste0("-- Getting  medications"))
+cohortTableProfiles_db<-tbl(db, sql(paste0("SELECT * FROM ",
+                       results_database_schema,
+                       ".", cohortTableProfiles)))
+
+med.persons <- outcome_db %>% 
+  filter(cohort_definition_id==working.outcome) %>% 
+  select(subject_id, cohort_start_date) %>% 
+  distinct() %>% 
+  left_join(drug_era_db,
+            by=c("subject_id"="person_id")
+            ) %>% 
+  rename("person_id"="subject_id") %>%
+        filter(drug_era_start_date>as.Date("2015-01-01")) %>%  
+  filter(drug_era_start_date < cohort_start_date) %>% 
+  inner_join(cohortTableProfiles_db ,
+             by=c("drug_concept_id"="concept_id")) %>% 
+  select(person_id,drug_id, drug_era_start_date, drug_era_end_date, cohort_start_date) %>% 
+  distinct() %>% 
+  collect() %>%
+  filter(drug_era_start_date<=(cohort_start_date-days(4))
+          & drug_era_start_date>=(cohort_start_date-days(183)) |
+           drug_era_end_date<=(cohort_start_date-days(4))
+                 & drug_era_end_date>=(cohort_start_date-days(183))) %>% 
+  select(person_id, drug_id)%>% 
+  distinct()
+
+for(n in 1:length(drug.codes)){# extract condition info and add to Pop
+working.code<-drug.codes[n]
+working.name<-drug.names[n]
+working.persons <-med.persons %>% 
+  filter(drug_id==n) %>% 
+  select(person_id) %>% 
+  mutate(working.drug=1)
+
+if(nrow(working.persons)>0){
+working.Pop.w.outcome<-working.Pop.w.outcome %>%
+  left_join(working.persons,
+             by = "person_id") %>% 
+  rename(!!working.name:="working.drug")
+} else {
+ working.Pop.w.outcome$working.drug<-0
+ working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  rename(!!working.name:="working.drug")
+}
+
+}
+disconnect(conn)
+
+#to zero if absent
+working.Pop.w.outcome<-working.Pop.w.outcome %>%
+  mutate(across(all_of(drug.names), ~ replace_na(.x, 0)))
+
+
+# summarise characteristics -----
+# overall
+Pop.summary.characteristics<-left_join(Pop.summary.characteristics,
+  get.summary.characteristics(working.Pop.w.outcome, working.outcome.name),
+  by="var")
+
+Pop.summary.characteristics.age_gr2.1<-left_join(Pop.summary.characteristics.age_gr2.1,
+                                                              get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                  filter(age_gr2=="30-44"), 
+                                                                                  working.outcome.name),
+                                                              by="var")
+Pop.summary.characteristics.age_gr2.2<-left_join(Pop.summary.characteristics.age_gr2.2,
+                                                              get.summary.characteristics(working.Pop.w.outcome %>%  
+                                                                                  filter(age_gr2=="45-64"), 
+                                                                                  working.outcome.name),
+                                                              by="var")
+Pop.summary.characteristics.age_gr2.3<-left_join(Pop.summary.characteristics.age_gr2.3,
+                                                              get.summary.characteristics(working.Pop.w.outcome %>%
+                                                                                  filter(age_gr2==">=65"), 
+                                                                                  working.outcome.name),
+                                                              by="var")
+if(working.study.cohort.type== "VaccinatedCohorts"){
+# december
+Pop.summary.characteristics.december<-left_join(Pop.summary.characteristics.december,
+                                               get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                             filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2020-12-31")), 
+                                                                           working.outcome.name),
+                                               by="var")
+Pop.summary.characteristics.december.age_gr2.1<-left_join(Pop.summary.characteristics.december.age_gr2.1,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                               filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                               filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                               filter(age_gr2=="30-44"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+Pop.summary.characteristics.december.age_gr2.2<-left_join(Pop.summary.characteristics.december.age_gr2.2,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                               filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                               filter(cohort_start_date<=as.Date("2020-12-31")) %>%  
+                                                                               filter(age_gr2=="45-64"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+Pop.summary.characteristics.december.age_gr2.3<-left_join(Pop.summary.characteristics.december.age_gr2.3,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                               filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                               filter(cohort_start_date<=as.Date("2020-12-31")) %>%
+                                                                               filter(age_gr2==">=65"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+
+
+# january
+Pop.summary.characteristics.january<-left_join(Pop.summary.characteristics.january,
+                                                get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-01-31")), 
+                                                                            working.outcome.name),
+                                                by="var")
+Pop.summary.characteristics.january.age_gr2.1<-left_join(Pop.summary.characteristics.january.age_gr2.1,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                      filter(age_gr2=="30-44"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.january.age_gr2.2<-left_join(Pop.summary.characteristics.january.age_gr2.2,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                      filter(age_gr2=="45-64"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.january.age_gr2.3<-left_join(Pop.summary.characteristics.january.age_gr2.3,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                      filter(age_gr2==">=65"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+
+
+
+# february
+Pop.summary.characteristics.february<-left_join(Pop.summary.characteristics.february,
+                                               get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-02-28")), 
+                                                                           working.outcome.name),
+                                               by="var")
+Pop.summary.characteristics.february.age_gr2.1<-left_join(Pop.summary.characteristics.february.age_gr2.1,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-02-28")) %>%  
+                                                                                       filter(age_gr2=="30-44"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+Pop.summary.characteristics.february.age_gr2.2<-left_join(Pop.summary.characteristics.february.age_gr2.2,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-02-28")) %>%   
+                                                                                       filter(age_gr2=="45-64"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+Pop.summary.characteristics.february.age_gr2.3<-left_join(Pop.summary.characteristics.february.age_gr2.3,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-02-28")) %>%  
+                                                                                       filter(age_gr2==">=65"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+}
+
+
+
+
+
+
+#with.history
+# overall
+Pop.summary.characteristics.with.history<-left_join(Pop.summary.characteristics.with.history,
+                                       get.summary.characteristics(working.Pop.w.outcome, working.outcome.name),
+                                       by="var")
+Pop.summary.characteristics.age_gr2.1.with.history<-left_join(Pop.summary.characteristics.age_gr2.1.with.history,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                               filter(age_gr2=="30-44"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+Pop.summary.characteristics.age_gr2.2.with.history<-left_join(Pop.summary.characteristics.age_gr2.2.with.history,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>%  
+                                                                               filter(age_gr2=="45-64"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+Pop.summary.characteristics.age_gr2.3.with.history<-left_join(Pop.summary.characteristics.age_gr2.3.with.history,
+                                                 get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>%
+                                                                               filter(age_gr2==">=65"), 
+                                                                             working.outcome.name),
+                                                 by="var")
+
+if(working.study.cohort.type== "VaccinatedCohorts"){
+# december
+Pop.summary.characteristics.december.with.history<-left_join(Pop.summary.characteristics.december.with.history,
+                                                get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                              filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2020-12-31")), 
+                                                                            working.outcome.name),
+                                                by="var")
+Pop.summary.characteristics.december.age_gr2.1.with.history<-left_join(Pop.summary.characteristics.december.age_gr2.1.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2020-12-31")) %>% 
+                                                                                        filter(age_gr2=="30-44"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.december.age_gr2.2.with.history<-left_join(Pop.summary.characteristics.december.age_gr2.2.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2020-12-31")) %>%  
+                                                                                        filter(age_gr2=="45-64"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.december.age_gr2.3.with.history<-left_join(Pop.summary.characteristics.december.age_gr2.3.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2020-12-31")) %>%
+                                                                                        filter(age_gr2==">=65"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+
+
+# january
+Pop.summary.characteristics.january.with.history<-left_join(Pop.summary.characteristics.january.with.history,
+                                               get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                             filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                             filter(cohort_start_date<=as.Date("2021-01-31")), 
+                                                                           working.outcome.name),
+                                               by="var")
+Pop.summary.characteristics.january.age_gr2.1.with.history<-left_join(Pop.summary.characteristics.january.age_gr2.1.with.history,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                       filter(age_gr2=="30-44"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+Pop.summary.characteristics.january.age_gr2.2.with.history<-left_join(Pop.summary.characteristics.january.age_gr2.2.with.history,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                       filter(age_gr2=="45-64"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+Pop.summary.characteristics.january.age_gr2.3.with.history<-left_join(Pop.summary.characteristics.january.age_gr2.3.with.history,
+                                                         get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                       filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                                                                                       filter(cohort_start_date<=as.Date("2021-01-31")) %>%  
+                                                                                       filter(age_gr2==">=65"), 
+                                                                                     working.outcome.name),
+                                                         by="var")
+
+
+
+# february
+Pop.summary.characteristics.february.with.history<-left_join(Pop.summary.characteristics.february.with.history,
+                                                get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                              filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                              filter(cohort_start_date<=as.Date("2021-02-28")), 
+                                                                            working.outcome.name),
+                                                by="var")
+Pop.summary.characteristics.february.age_gr2.1.with.history<-left_join(Pop.summary.characteristics.february.age_gr2.1.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-02-28")) %>%  
+                                                                                        filter(age_gr2=="30-44"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.february.age_gr2.2.with.history<-left_join(Pop.summary.characteristics.february.age_gr2.2.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)   %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-02-28")) %>%   
+                                                                                        filter(age_gr2=="45-64"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+Pop.summary.characteristics.february.age_gr2.3.with.history<-left_join(Pop.summary.characteristics.february.age_gr2.3.with.history,
+                                                          get.summary.characteristics(working.Pop.w.outcome %>% filter(prior_obs_years>=1)  %>% 
+                                                                                        filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                                                                                        filter(cohort_start_date<=as.Date("2021-02-28")) %>%  
+                                                                                        filter(age_gr2==">=65"), 
+                                                                                      working.outcome.name),
+                                                          by="var")
+
+}
+
+
+
+
+
+# time splits -----
+
+# VaccinatedCohorts: splitting follow up time: w1, 0_14, 0_21, and 0_28 days 
+if(working.study.cohort.type== "VaccinatedCohorts"){
+a<- survSplit(Surv(f_u.outcome.days, f_u.outcome) ~., 
+                 working.Pop,
+                   cut=c(7, 14, 21, 28), 
+           episode ="timegroup")
+working.Pop.w1<-a %>% filter(timegroup==1)
+working.Pop.w2<-a %>% filter(timegroup==2)
+working.Pop.w3<-a %>% filter(timegroup==3)
+working.Pop.w4<-a %>% filter(timegroup==4)
+rm(a)
+}
+
+# CovidCohorts: splitting follow up time: 0_14, 0_28, 0_60, 28_90
+if(working.study.cohort.type== "CovidCohorts"){
+  a<- survSplit(Surv(f_u.outcome.days, f_u.outcome) ~., 
+                working.Pop,
+                cut=c(14, 28, 60, 90), 
+                episode ="timegroup")
+  working.Pop.w1<-a %>% filter(timegroup==1)
+  working.Pop.w2<-a %>% filter(timegroup==2)
+  working.Pop.w3<-a %>% filter(timegroup==3)
+  working.Pop.w4<-a %>% filter(timegroup==4)
+  rm(a)
+}
+
+# Not used for GeneralPopCohorts
+if(working.study.cohort.type== "GeneralPopCohorts"){
+working.Pop.w1<-NULL
+working.Pop.w2<-NULL
+working.Pop.w3<-NULL
+working.Pop.w4<-NULL
+}
+
+# IRs  ------
+get.IR.summaries<-function(working.data,
+                           working.data.w1,
+                           working.data.w2,
+                           working.data.w3,
+                           working.data.w4,
+                           value.prior.obs.required,
+                           value.pop.type,
+                           value.working.outcome,
+                           value.working.outcome.name,
+                           value.working.study.cohort){
+  
+  working.IR.summary<-list()
+  
+  # overall
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "0_28",";","overall")]]<-working.data %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+  
+  if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","overall")]]<-working.data.w1 %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","overall")]]<-working.data.w2 %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","overall")]]<-working.data.w3 %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","overall")]]<-working.data.w4 %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+  }
+  
+  
+# by gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "0_28",";","gender")]]<-working.data %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","gender")]]<-working.data.w1 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","gender")]]<-working.data.w2 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","gender")]]<-working.data.w3 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","gender")]]<-working.data.w4 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+# by age and gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "0_28",";","age_gr_gender")]]<-working.data %>%  
+  group_by(age_gr, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr_gender")]]<-working.data.w1 %>%  
+  group_by(age_gr, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>%  
+   mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","age_gr_gender")]]<-working.data.w2 %>%  
+  group_by(age_gr, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr_gender")]]<-working.data.w3 %>%  
+  group_by(age_gr, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr_gender")]]<-working.data.w4 %>%  
+  group_by(age_gr, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+
+
+# by age (fewer groups) and gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "0_28",";","age_gr2_gender")]]<-working.data %>%  
+  group_by(age_gr2, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr2_gender")]]<-working.data.w1 %>%  
+  group_by(age_gr2, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","gender")]]<-working.data.w2 %>%  
+  group_by(age_gr2, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+ mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr2_gender")]]<-working.data.w3 %>%  
+  group_by(age_gr2, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+ mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr2_gender")]]<-working.data.w4 %>%  
+  group_by(age_gr2, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+
+# by age (thrid definition) and gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                    "0_28",";","age_gr3_gender")]]<-working.data %>%  
+  group_by(age_gr3, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr3_gender")]]<-working.data.w1 %>%  
+  group_by(age_gr3, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","age_gr3_gender")]]<-working.data.w2 %>%  
+  group_by(age_gr3, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr3_gender")]]<-working.data.w3 %>%  
+  group_by(age_gr3, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr3_gender")]]<-working.data.w4 %>%  
+  group_by(age_gr3, gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+
+
+# by age 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                    "0_28",";","age_gr")]]<-working.data %>%  
+  group_by(age_gr) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr")]]<-working.data.w1 %>%  
+  group_by(age_gr) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","age_gr")]]<-working.data.w2 %>%  
+  group_by(age_gr) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr")]]<-working.data.w3 %>%  
+  group_by(age_gr) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr")]]<-working.data.w4 %>%  
+  group_by(age_gr) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+# by age (fewer groups) and gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                    "0_28",";","age_gr2")]]<-working.data %>%  
+  group_by(age_gr2) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr2")]]<-working.data.w1 %>%  
+  group_by(age_gr2) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","age_gr2")]]<-working.data.w2 %>%  
+  group_by(age_gr2) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr2")]]<-working.data.w3 %>%  
+  group_by(age_gr2) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr2")]]<-working.data.w4 %>%  
+  group_by(age_gr2) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+if(is.null(working.data.w1)!=TRUE){ 
+# by age (thrid definition) and gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                    "0_28",";","age_gr3")]]<-working.data %>%  
+  group_by(age_gr3) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="0_28") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","age_gr3")]]<-working.data.w1 %>%  
+  group_by(age_gr3) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","age_gr3")]]<-working.data.w2 %>%  
+  group_by(age_gr3) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","age_gr3")]]<-working.data.w3 %>%  
+  group_by(age_gr3) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+
+# return
+  bind_rows(working.IR.summary,.id = NULL)
+}
+# no prior obs
+# all pop
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "pop.all")]]<-
+get.IR.summaries(working.data=working.Pop,
+                 working.data.w1=working.Pop.w1,
+                 working.data.w2=working.Pop.w2,
+                 working.data.w3=working.Pop.w3,
+                 working.data.w4=working.Pop.w4,
+                 value.prior.obs.required="No",
+                 value.pop.type="All",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort)
+
+if(run.vax.cohorts=="TRUE"){
+# no prior obs
+  # december
+  IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "december")]]<-
+    get.IR.summaries(working.data=working.Pop%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w1=working.Pop.w1 %>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w2=working.Pop.w2 %>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w3=working.Pop.w3 %>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w4=working.Pop.w4 %>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     value.prior.obs.required="No",
+                     value.pop.type="December",
+                     value.working.outcome=working.outcome,
+                     value.working.outcome.name=working.outcome.name,
+                     value.working.study.cohort=working.study.cohort)
+
+    
+# january
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "january")]]<-
+  get.IR.summaries(working.data=working.Pop%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w1=working.Pop.w1 %>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w2=working.Pop.w2 %>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w3=working.Pop.w3 %>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w4=working.Pop.w4 %>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   value.prior.obs.required="No",
+                   value.pop.type="January",
+                   value.working.outcome=working.outcome,
+                   value.working.outcome.name=working.outcome.name,
+                   value.working.study.cohort=working.study.cohort)
+# no prior obs
+# february
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "february")]]<-
+get.IR.summaries(working.data=working.Pop%>% 
+                   filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                   filter(cohort_start_date<=as.Date("2021-02-28")),
+                 working.data.w1=working.Pop.w1 %>% 
+                   filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                   filter(cohort_start_date<=as.Date("2021-02-28")),
+                 working.data.w2=working.Pop.w2 %>% 
+                   filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                   filter(cohort_start_date<=as.Date("2021-02-28")),
+                 working.data.w3=working.Pop.w3 %>% 
+                   filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                   filter(cohort_start_date<=as.Date("2021-02-28")),
+                 working.data.w4=working.Pop.w4 %>% 
+                   filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                   filter(cohort_start_date<=as.Date("2021-02-28")),
+                 value.prior.obs.required="No",
+                 value.pop.type="February",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort)
+
+}
+
+
+# prior obs
+# all pop
+if(is.null(working.Pop.w1)!=TRUE){ 
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "pop.all")]]<-
+get.IR.summaries(working.data=working.Pop %>% 
+                              filter(prior_obs_years>=1),
+                 working.data.w1=working.Pop.w1 %>% 
+                              filter(prior_obs_years>=1),
+                 working.data.w2=working.Pop.w2 %>% 
+                              filter(prior_obs_years>=1),
+                 working.data.w3=working.Pop.w3 %>% 
+                              filter(prior_obs_years>=1),
+                 working.data.w4=working.Pop.w4 %>% 
+                   filter(prior_obs_years>=1),
+                 value.prior.obs.required="Yes",
+                 value.pop.type="All",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort)
+} else {
+  IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "pop.all")]]<-
+    get.IR.summaries(working.data=working.Pop %>% 
+                       filter(prior_obs_years>=1),
+                     working.data.w1=working.Pop.w1,
+                     working.data.w2=working.Pop.w2,
+                     working.data.w3=working.Pop.w3,
+                     working.data.w4=working.Pop.w4,
+                     value.prior.obs.required="Yes",
+                     value.pop.type="All",
+                     value.working.outcome=working.outcome,
+                     value.working.outcome.name=working.outcome.name,
+                     value.working.study.cohort=working.study.cohort) 
+  
+}
+
+if(run.vax.cohorts=="TRUE"){
+  # prior obs
+  # december
+  IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "december")]]<-
+    get.IR.summaries(working.data=working.Pop %>% 
+                       filter(prior_obs_years>=1)%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w1=working.Pop.w1 %>% 
+                       filter(prior_obs_years>=1)%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w2=working.Pop.w2 %>% 
+                       filter(prior_obs_years>=1)%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w3=working.Pop.w3 %>% 
+                       filter(prior_obs_years>=1)%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     working.data.w4=working.Pop.w4 %>% 
+                       filter(prior_obs_years>=1)%>% 
+                       filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                       filter(cohort_start_date<=as.Date("2020-12-31")),
+                     value.prior.obs.required="Yes",
+                     value.pop.type="December",
+                     value.working.outcome=working.outcome,
+                     value.working.outcome.name=working.outcome.name,
+                     value.working.study.cohort=working.study.cohort)  
+  
+  
+# prior obs
+# january
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "january")]]<-
+  get.IR.summaries(working.data=working.Pop %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w1=working.Pop.w1 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w2=working.Pop.w2 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w3=working.Pop.w3 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   working.data.w4=working.Pop.w4 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                   value.prior.obs.required="Yes",
+                   value.pop.type="January",
+                   value.working.outcome=working.outcome,
+                   value.working.outcome.name=working.outcome.name,
+                   value.working.study.cohort=working.study.cohort)
+
+# prior obs
+# february
+IR.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "february")]]<-
+  get.IR.summaries(working.data=working.Pop %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                   working.data.w1=working.Pop.w1 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                   working.data.w2=working.Pop.w2 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                   working.data.w3=working.Pop.w3 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                   working.data.w4=working.Pop.w4 %>% 
+                     filter(prior_obs_years>=1)%>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                   value.prior.obs.required="Yes",
+                   value.pop.type="February",
+                   value.working.outcome=working.outcome,
+                   value.working.outcome.name=working.outcome.name,
+                   value.working.study.cohort=working.study.cohort)
+
+
+}
+
+# Summarise survival ------
+
+get.Surv.summaries<-function(working.data,
+                           value.prior.obs.required,
+                           value.pop.type,
+                           value.working.outcome,
+                           value.working.outcome.name,
+                           value.working.study.cohort, 
+                           working.times){
+  # add to working.Survival.summary
+    working.Survival.summary<-list()
+  
+#tidy
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ 1, 
+                data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                                 "overall")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group="overall")%>% 
+  mutate(strata="overall") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ gender, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","gender")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr+gender, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr_gender")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr2+gender, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr2_gender")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr2_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)   %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr3+gender, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr3_gender")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr3_gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)   %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr2, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr2")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr2") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)   %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ age_gr3, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","age_gr3")]]<-data.frame(
+              time=s$time,
+              n.risk=s$n.risk,
+              n.event= s$n.event,
+              surv=s$surv,
+              lower=s$lower,
+              upper=s$upper,
+              group=s$strata)%>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)   %>% 
+  mutate(pop=value.working.study.cohort)
+
+bind_rows(working.Survival.summary,.id = NULL)
+
+  
+}
+
+
+if(working.study.cohort.type!="GeneralPopCohorts"){  # not for GeneralPopCohorts 
+# no prior obs
+# all pop
+if(working.study.cohort.type== "VaccinatedCohorts"){
+working_times<-c(0, 7, 14, 21, 28)
+}
+if(working.study.cohort.type== "CovidCohorts"){
+working_times<-c(0, 14, 28, 60, 90)
+  }
+   
+   
+         
+  
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "pop.all")]]<-
+get.Surv.summaries(working.data=working.Pop,
+                 value.prior.obs.required="No",
+                 value.pop.type="All",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+
+if(working.study.cohort.type== "VaccinatedCohorts"){
+  # no prior obs
+  # december
+  Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "december")]]<-
+    get.Surv.summaries(working.data=working.Pop %>% 
+                         filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                         filter(cohort_start_date<=as.Date("2020-12-31")),
+                       value.prior.obs.required="No",
+                       value.pop.type="December",
+                       value.working.outcome=working.outcome,
+                       value.working.outcome.name=working.outcome.name,
+                       value.working.study.cohort=working.study.cohort,
+                       working.times = working_times)  
+  
+# no prior obs
+# january
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "january")]]<-
+get.Surv.summaries(working.data=working.Pop%>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                 value.prior.obs.required="No",
+                 value.pop.type="January",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+# no prior obs
+# february
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","No.prior.obs", ";", "february")]]<-
+get.Surv.summaries(working.data=working.Pop %>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                 value.prior.obs.required="No",
+                 value.pop.type="February",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+
+}
+
+
+# prior obs
+# all pop
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "pop.all")]]<-
+get.Surv.summaries(working.data=working.Pop %>% 
+                              filter(prior_obs_years>=1),
+                 value.prior.obs.required="Yes",
+                 value.pop.type="All",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+
+if(working.study.cohort.type== "VaccinatedCohorts"){
+  # prior obs
+  #  december
+  Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "december")]]<-
+    get.Surv.summaries(working.data=working.Pop %>% 
+                         filter(prior_obs_years>=1) %>% 
+                         filter(cohort_start_date>=as.Date("2020-12-01")) %>% 
+                         filter(cohort_start_date<=as.Date("2020-12-31")),
+                       value.prior.obs.required="Yes",
+                       value.pop.type="December",
+                       value.working.outcome=working.outcome,
+                       value.working.outcome.name=working.outcome.name,
+                       value.working.study.cohort=working.study.cohort,
+                       working.times = working_times)  
+  
+# prior obs
+# january
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "january")]]<-
+get.Surv.summaries(working.data=working.Pop %>% 
+                              filter(prior_obs_years>=1) %>% 
+                     filter(cohort_start_date>=as.Date("2021-01-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-01-31")),
+                 value.prior.obs.required="Yes",
+                 value.pop.type="January",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+# prior obs
+#  february
+Survival.summary[[paste0(working.study.cohort,";",working.outcome.name,";","prior.obs", ";", "february")]]<-
+get.Surv.summaries(working.data=working.Pop %>% 
+                              filter(prior_obs_years>=1) %>% 
+                     filter(cohort_start_date>=as.Date("2021-02-01")) %>% 
+                     filter(cohort_start_date<=as.Date("2021-02-28")),
+                 value.prior.obs.required="Yes",
+                 value.pop.type="February",
+                 value.working.outcome=working.outcome,
+                 value.working.outcome.name=working.outcome.name,
+                 value.working.study.cohort=working.study.cohort,
+                 working.times = working_times)
+}
+
+}
+
+
+
+}
+}
+
+
+
+pat.ch<-list()
+pat.ch[[1]]<-Pop.summary.characteristics %>%
+  mutate(pop.type="All") %>% 
+  mutate(prior.obs.required="No") %>% 
+  mutate(pop=working.study.cohort) %>% 
+  mutate(age_gr2="All")
+pat.ch[[2]]<-Pop.summary.characteristics.age_gr2.1 %>%
+  mutate(pop.type="All") %>% 
+  mutate(prior.obs.required="No") %>% 
+  mutate(pop=working.study.cohort) %>% 
+  mutate(age_gr2="30-44")
+pat.ch[[3]]<-Pop.summary.characteristics.age_gr2.2 %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="No") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="45-64")
+pat.ch[[4]]<- Pop.summary.characteristics.age_gr2.3 %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="No") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2=">=65")
+pat.ch[[5]]<-Pop.summary.characteristics.with.history %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="Yes") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="All") 
+pat.ch[[6]]<- Pop.summary.characteristics.age_gr2.1.with.history %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="Yes") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="30-44")
+pat.ch[[7]]<- Pop.summary.characteristics.age_gr2.2.with.history %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="Yes") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="45-64")
+pat.ch[[8]]<-    Pop.summary.characteristics.age_gr2.3.with.history %>%
+    mutate(pop.type="All") %>% 
+    mutate(prior.obs.required="Yes") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2=">=65")
+  
+ 
+if(working.study.cohort.type== "VaccinatedCohorts"){
+pat.ch[[9]]<- Pop.summary.characteristics.december %>%
+    mutate(pop.type="December") %>% 
+    mutate(prior.obs.required="No") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="All")
+pat.ch[[10]]<-Pop.summary.characteristics.december.age_gr2.1 %>%
+    mutate(pop.type="December") %>% 
+    mutate(prior.obs.required="No") %>% 
+    mutate(pop=working.study.cohort) %>% 
+    mutate(age_gr2="30-44")
+pat.ch[[11]]<-Pop.summary.characteristics.december.age_gr2.2 %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64")
+pat.ch[[12]]<-Pop.summary.characteristics.december.age_gr2.3 %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+    
+pat.ch[[13]]<- Pop.summary.characteristics.january %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="All")
+pat.ch[[14]]<- Pop.summary.characteristics.january.age_gr2.1 %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="30-44")
+pat.ch[[15]]<- Pop.summary.characteristics.january.age_gr2.2 %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64")
+pat.ch[[16]]<- Pop.summary.characteristics.january.age_gr2.3 %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+    
+pat.ch[[17]]<- Pop.summary.characteristics.february %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="All")
+pat.ch[[18]]<- Pop.summary.characteristics.february.age_gr2.1 %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(age_gr2="30-44") %>% 
+      mutate(pop=working.study.cohort)
+pat.ch[[19]]<- Pop.summary.characteristics.february.age_gr2.2 %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64")
+pat.ch[[20]]<- Pop.summary.characteristics.february.age_gr2.3 %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="No") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+pat.ch[[21]]<- Pop.summary.characteristics.december.with.history %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="All")
+pat.ch[[22]]<- Pop.summary.characteristics.december.age_gr2.1.with.history %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="30-44")
+pat.ch[[23]]<- Pop.summary.characteristics.december.age_gr2.2.with.history %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64")
+pat.ch[[24]]<- Pop.summary.characteristics.december.age_gr2.3.with.history %>%
+      mutate(pop.type="December") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+    
+    pat.ch[[25]]<- Pop.summary.characteristics.january.with.history %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="All")
+    pat.ch[[26]]<- Pop.summary.characteristics.january.age_gr2.1.with.history %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="30-44")
+    pat.ch[[27]]<- Pop.summary.characteristics.january.age_gr2.2.with.history %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64") 
+    pat.ch[[28]]<- Pop.summary.characteristics.january.age_gr2.3.with.history %>%
+      mutate(pop.type="January") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+    
+    pat.ch[[29]]<- Pop.summary.characteristics.february.with.history %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="All")
+    pat.ch[[30]]<- Pop.summary.characteristics.february.age_gr2.1.with.history %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(age_gr2="30-44") %>% 
+      mutate(pop=working.study.cohort)
+    pat.ch[[31]]<- Pop.summary.characteristics.february.age_gr2.2.with.history %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2="45-64") 
+    pat.ch[[32]]<- Pop.summary.characteristics.february.age_gr2.3.with.history %>%
+      mutate(pop.type="February") %>% 
+      mutate(prior.obs.required="Yes") %>% 
+      mutate(pop=working.study.cohort) %>% 
+      mutate(age_gr2=">=65")
+} 
+
+Patient.characteristcis[[paste0(i)]]<-bind_rows(pat.ch)
+
+
+
+}
+
+}
+
+IR.summary<-bind_rows(IR.summary, .id = NULL)
+IR.summary$db<-db.name
+
+if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
+Survival.summary<-bind_rows(Survival.summary, .id = NULL)
+Survival.summary$db<-db.name
+Survival.summary<-Survival.summary %>% 
+  group_by(group, strata, outcome,pop.type,
+           outcome.name,prior.obs.required) %>% 
+  mutate(cum.n.event=cumsum(n.event))
+}
+
+#obscure events less than five
+IR.summary<-IR.summary %>% 
+  mutate(events=ifelse(events<5, "<5",events))  %>% 
+  mutate(ir_100000=ifelse(events=="<5",NA,ir_100000))
+
+if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
+Survival.summary<-Survival.summary %>% 
+  mutate(n.event=ifelse(n.event<5, "<5",n.event)) %>% 
+  mutate(cum.n.event=ifelse(cum.n.event<5, "<5",cum.n.event)) %>% 
+  mutate(surv=ifelse(cum.n.event=="<5",NA,surv)) %>% 
+  mutate(lower=ifelse(cum.n.event=="<5",NA,lower)) %>% 
+  mutate(upper=ifelse(cum.n.event=="<5",NA,upper)) 
+}
+
+
+
+
+# save ----
+save(IR.summary, file = paste0(output.folder, "/IR.summary_", db.name, ".RData"))
+save(Patient.characteristcis, file = paste0(output.folder, "/Patient.characteristcis_", db.name, ".RData"))
+
+if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
+  save(Survival.summary, file = paste0(output.folder, "/Survival.summary_", db.name, ".RData"))  
+}
+
+
+# # zip results
+print("Zipping results to output folder")
+unlink(paste0(output.folder, "/OutputToShare_", db.name, ".zip"))
+zipName <- paste0(output.folder, "/OutputToShare_", db.name, ".zip")
+
+if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
+files<-c(paste0(output.folder, "/IR.summary_", db.name, ".RData"),
+         paste0(output.folder, "/Survival.summary_", db.name, ".RData"),
+         paste0(output.folder, "/Patient.characteristcis_", db.name, ".RData"))
+} else {
+  files<-c(paste0(output.folder, "/IR.summary_", db.name, ".RData"),
+           paste0(output.folder, "/Patient.characteristcis_", db.name, ".RData")) 
+}
+files <- files[file.exists(files)==TRUE]
+createZipFile(zipFile = zipName,
+              rootFolder=output.folder,
+              files = files)
+
+print("Done!")
+print("-- If all has worked, there should now be a zip folder with your results in the output folder to share")
+print("-- Thank you for running the study!")
+
+
