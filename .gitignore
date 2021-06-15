@@ -42,3 +42,4 @@ output/Patient.characteristcis_IPCI.RData
 output/Patient.characteristcis_Italy LPD.RData
 SummariseResults/*
 output/*
+CohortSummary.R

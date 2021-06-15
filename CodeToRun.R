@@ -39,8 +39,8 @@ oracleTempSchema<-NULL
 # p20_000211_cdm_aurum is db with vaccinated cohorts 
 # p20_059_cdm_aurum is db with covid cohorts 
 # cdmgold202007 with general population
-server<-Sys.getenv("DB_SERVER_p20_059_cdm_aurum")
-server_dbi<-Sys.getenv("DB_SERVER_p20_059_cdm_aurum_dbi")
+server<-Sys.getenv("DB_SERVER_p20_000211_cdm_aurum")
+server_dbi<-Sys.getenv("DB_SERVER_p20_000211_cdm_aurum_dbi")
 
 user<-Sys.getenv("DB_USER")
 password<- Sys.getenv("DB_PASSWORD")
@@ -90,8 +90,8 @@ create.outcome.cohorts<-FALSE
 # if you have already created the outcome cohorts, you can set this to FALSE to skip instantiating these cohorts again
 
 
-run.vax.cohorts<-FALSE
-run.covid.cohorts<-TRUE
+run.vax.cohorts<-TRUE
+run.covid.cohorts<-FALSE
 run.general.pop.cohorts<-FALSE
 
 # run the analysis

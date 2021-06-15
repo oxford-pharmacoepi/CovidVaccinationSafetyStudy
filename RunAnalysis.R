@@ -503,15 +503,53 @@ Pop<-Pop %>%
   mutate(across(all_of(drug.names), ~ replace_na(.x, 0)))
 
 
+# composite condition and medication measure -----
+c.names<-c("autoimmune_disease",
+           "antiphospholipid_syndrome",
+           "thrombophilia",
+           "atrial_fibrillation",
+           "malignant_neoplastic_disease",
+           "diabetes_mellitus",
+           "obesity",
+           "renal_impairment")
+d.names<-c("antiinflamatory_and_antirheumatic", 
+           "coxibs",
+           "corticosteroids",
+           "hormonal_contraceptives",
+           "tamoxifen",
+           "sex_hormones_modulators")
+
+Pop$cond.comp<-rowSums(Pop %>% select(all_of(c.names))) 
+Pop$drug.comp<-rowSums(Pop %>% select(all_of(d.names))) 
+Pop$cond.drug.comp<-rowSums(Pop %>% select(all_of(c(c.names,  d.names)))) 
+
+Pop<-Pop %>% 
+  mutate(cond.comp=ifelse(cond.comp==0, 0,1))%>% 
+  mutate(drug.comp=ifelse(drug.comp==0, 0,1))%>% 
+  mutate(cond.drug.comp=ifelse(cond.drug.comp==0, 0,1))
+
+
 # summarise characteristics -----
 get.summary.characteristics<-function(working.data, working.name){
-summary.characteristics<-bind_rows(
+summary.characteristics<-bind_rows( 
 data.frame(Overall=t(working.data %>% 
   mutate(index_year=year(cohort_start_date)) %>% 
   summarise(n=nice.num.count(length(person_id)),
     age=paste0(nice.num.count(median(age)),  " [",
                      nice.num.count(quantile(age,probs=0.25)),  " to ",
-                     nice.num.count(quantile(age,probs=0.75)),   "]" ),
+                     nice.num.count(quantile(age,probs=0.75)),   "]" ), 
+     age.30_39=paste0(nice.num.count(sum(age_gr3=="30-39")),
+                      " (",  nice.num((sum(age_gr3=="30-39")/length(person_id))*100),  "%)"), 
+    age.40_49=paste0(nice.num.count(sum(age_gr3=="40-49")),
+                     " (",  nice.num((sum(age_gr3=="40-49")/length(person_id))*100),  "%)"), 
+    age.50_59=paste0(nice.num.count(sum(age_gr3=="50-59")),
+                     " (",  nice.num((sum(age_gr3=="50-59")/length(person_id))*100),  "%)"), 
+    age.60_69=paste0(nice.num.count(sum(age_gr3=="60-69")),
+                     " (",  nice.num((sum(age_gr3=="60-69")/length(person_id))*100),  "%)"), 
+    age.70_79=paste0(nice.num.count(sum(age_gr3=="70-79")),
+                     " (",  nice.num((sum(age_gr3=="70-79")/length(person_id))*100),  "%)"), 
+    age.80u=paste0(nice.num.count(sum(age_gr3==">=80")),
+                     " (",  nice.num((sum(age_gr3==">=80")/length(person_id))*100),  "%)"), 
     sex.male=paste0(nice.num.count(sum(gender=="Male")),
                     " (",  nice.num((sum(gender=="Male")/length(person_id))*100),
     "%)"),
@@ -521,7 +559,7 @@ data.frame(Overall=t(working.data %>%
   )),
 # and all the conds and medications
 data.frame(Overall=t(working.data %>% 
-  summarise_at(.vars = all_of(c(cond.names, drug.names)), 
+  summarise_at(.vars = all_of(c(cond.names, drug.names, "cond.comp", "drug.comp", "cond.drug.comp")), 
                .funs = function(x, tot){
   paste0(nice.num.count(sum(x)), " (", nice.num((sum(x)/tot)*100), "%)")
 } , tot=nrow(working.data))) ))
@@ -541,9 +579,20 @@ summary.characteristics$Overall<-
 summary.characteristics$var<-row.names(summary.characteristics)
 row.names(summary.characteristics)<-1:nrow(summary.characteristics)
 
+summary.characteristics <-summary.characteristics %>% 
+  mutate(var=ifelse(var=="Cond.comp",
+                    "One or more condition of interest", var )) %>% 
+  mutate(var=ifelse(var=="Drug.comp",
+                    "One or more medication of interest", var )) %>% 
+  mutate(var=ifelse(var=="Cond.drug.comp",
+                    "One or more condition/ medication of interest", var ))
+
+
+
 summary.characteristics %>% 
   select(var, Overall) %>% 
   rename(!!working.name:=Overall)
+
 
 
 }
@@ -811,14 +860,14 @@ if(working.outcomes %>%
 } else {
   # continue only if occurrences of outcome
 
-# drop anyone with the outcome in the year prior to the index ------
+# drop anyone with the outcome in the year prior to the index, including index date itself ------
 washout.outcomes<-working.outcomes %>% 
   inner_join(working.Pop %>% 
                select(person_id,cohort_start_date) %>% 
                rename("subject_id"="person_id") %>% 
                rename("Pop_cohort_start_date"="cohort_start_date")) %>% 
   filter(cohort_start_date>= (Pop_cohort_start_date-years(1))) %>% 
-  filter(cohort_start_date<= Pop_cohort_start_date) 
+  filter(cohort_start_date<= Pop_cohort_start_date) # nb including index date itself
 
 working.Pop<-working.Pop %>% 
   anti_join(washout.outcomes %>% 
@@ -878,9 +927,7 @@ if(working.study.cohort.type=="GeneralPopCohorts"){
     filter(as.Date(cohort_start_date)<= as.Date(dmy(paste0("31-12-","2019"))))
            }
 
-
-
-if(nrow(f_u.outcome)>=5){ # 5 or more cases
+if(nrow(f_u.outcome)>=1){ 
 f_u.outcome<-f_u.outcome %>% 
   group_by(subject_id) %>%
   arrange(cohort_start_date) %>% 
@@ -894,7 +941,7 @@ working.Pop<-working.Pop %>%
   by=c("person_id"="subject_id"))
 working.Pop<-working.Pop %>% 
   mutate(f_u.outcome=ifelse(is.na(f_u.outcome),0,1))
-
+# sum(working.Pop$f_u.outcome)
 
 # TAR -----
 # VaccinatedCohorts: censor at first of outcome, end of observation period, 28 days
@@ -929,10 +976,13 @@ working.Pop<-working.Pop %>%
   mutate(f_u.outcome.days=as.numeric(difftime(f_u.outcome_date,
                                               cohort_start_date, 
                                                    units="days")))
-# table(is.na(working.Pop$f_u.outcome.days))
-# quantile(working.Pop$f_u.outcome.days)
+# working.Pop %>% 
+#   group_by(f_u.outcome) %>% 
+#   summarise(min(f_u.outcome.days),
+#             median(f_u.outcome.days),
+#             max(f_u.outcome.days))
 
-# require minimum of 1 day of risk for working outcome ----
+# require minimum of 1 day of time at risk ----
 working.Pop<-working.Pop %>% 
   filter(f_u.outcome.days>0)
 
@@ -1136,6 +1186,15 @@ working.Pop.w.outcome<-working.Pop.w.outcome %>%
   mutate(across(all_of(drug.names), ~ replace_na(.x, 0)))
 
 
+# composite condition and medication measure -----
+working.Pop.w.outcome$cond.comp<-rowSums(working.Pop.w.outcome %>% select(all_of(c.names))) 
+working.Pop.w.outcome$drug.comp<-rowSums(working.Pop.w.outcome %>% select(all_of(d.names))) 
+working.Pop.w.outcome$cond.drug.comp<-rowSums(working.Pop.w.outcome %>% select(all_of(c(c.names,  d.names)))) 
+
+working.Pop.w.outcome<-working.Pop.w.outcome %>% 
+  mutate(cond.comp=ifelse(cond.comp==0, 0,1))%>% 
+  mutate(drug.comp=ifelse(drug.comp==0, 0,1))%>% 
+  mutate(cond.drug.comp=ifelse(cond.drug.comp==0, 0,1))
 # summarise characteristics -----
 # overall
 Pop.summary.characteristics<-left_join(Pop.summary.characteristics,
@@ -1379,7 +1438,8 @@ if(working.study.cohort.type== "VaccinatedCohorts"){
 a<- survSplit(Surv(f_u.outcome.days, f_u.outcome) ~., 
                  working.Pop,
                    cut=c(7, 14, 21, 28), 
-           episode ="timegroup")
+           episode ="timegroup", 
+           end="tend")
 working.Pop.w1<-a %>% filter(timegroup==1)
 working.Pop.w2<-a %>% filter(timegroup==2)
 working.Pop.w3<-a %>% filter(timegroup==3)
@@ -1392,7 +1452,8 @@ if(working.study.cohort.type== "CovidCohorts"){
   a<- survSplit(Surv(f_u.outcome.days, f_u.outcome) ~., 
                 working.Pop,
                 cut=c(14, 28, 60, 90), 
-                episode ="timegroup")
+                episode ="timegroup", 
+                end="tend")
   working.Pop.w1<-a %>% filter(timegroup==1)
   working.Pop.w2<-a %>% filter(timegroup==2)
   working.Pop.w3<-a %>% filter(timegroup==3)
@@ -1424,7 +1485,7 @@ get.IR.summaries<-function(working.data,
   
   # overall
   working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                             "0_28",";","overall")]]<-working.data %>% 
+                             "Full",";","overall")]]<-working.data %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
             years=(days/365.25),
@@ -1435,14 +1496,14 @@ get.IR.summaries<-function(working.data,
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
   
   if(is.null(working.data.w1)!=TRUE){ 
   working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w1",";","overall")]]<-working.data.w1 %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1456,7 +1517,7 @@ get.IR.summaries<-function(working.data,
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w2",";","overall")]]<-working.data.w2 %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1470,7 +1531,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w3",";","overall")]]<-working.data.w3 %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1484,7 +1545,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                            "w4",";","overall")]]<-working.data.w4 %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1500,7 +1561,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   
 # by gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                   "0_28",";","gender")]]<-working.data %>%  
+                   "Full",";","gender")]]<-working.data %>%  
   group_by(gender) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1512,7 +1573,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 
 if(is.null(working.data.w1)!=TRUE){ 
@@ -1520,7 +1581,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w1",";","gender")]]<-working.data.w1 %>%  
   group_by(gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1535,7 +1596,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","gender")]]<-working.data.w2 %>%  
   group_by(gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1550,7 +1611,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","gender")]]<-working.data.w3 %>%  
   group_by(gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1565,7 +1626,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","gender")]]<-working.data.w4 %>%  
   group_by(gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1578,9 +1639,339 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(pop=value.working.study.cohort)
 }
 
+
+
+# by gender
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "Full",";","gender")]]<-working.data %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w1",";","gender")]]<-working.data.w1 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(tend-tstart),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w1") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w2",";","gender")]]<-working.data.w2 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(tend-tstart),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w2") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                   "w3",";","gender")]]<-working.data.w3 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(tend-tstart),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+   mutate(time.window="w3") %>% 
+  mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","gender")]]<-working.data.w4 %>%  
+  group_by(gender) %>% 
+  summarise(n=length(person_id),
+            days=sum(tend-tstart),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+}
+
+
+
+
+# by cond.comp
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","cond.comp")]]<-working.data %>%  
+  group_by(cond.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="cond.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","cond.comp")]]<-working.data.w1 %>%  
+    group_by(cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","cond.comp")]]<-working.data.w2 %>%  
+    group_by(cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","cond.comp")]]<-working.data.w3 %>%  
+    group_by(cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","cond.comp")]]<-working.data.w4 %>%  
+    group_by(cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+# by drug.comp
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","drug.comp")]]<-working.data %>%  
+  group_by(drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","drug.comp")]]<-working.data.w1 %>%  
+    group_by(drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","drug.comp")]]<-working.data.w2 %>%  
+    group_by(drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","drug.comp")]]<-working.data.w3 %>%  
+    group_by(drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","drug.comp")]]<-working.data.w4 %>%  
+    group_by(drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+
+# by cond.drug.comp
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","cond.drug.comp")]]<-working.data %>%  
+  group_by(cond.drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="cond.drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","cond.drug.comp")]]<-working.data.w1 %>%  
+    group_by(cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","cond.drug.comp")]]<-working.data.w2 %>%  
+    group_by(cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","cond.drug.comp")]]<-working.data.w3 %>%  
+    group_by(cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","cond.drug.comp")]]<-working.data.w4 %>%  
+    group_by(cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+
 # by age and gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                   "0_28",";","age_gr_gender")]]<-working.data %>%  
+                   "Full",";","age_gr_gender")]]<-working.data %>%  
   group_by(age_gr, gender) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1592,14 +1983,14 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 if(is.null(working.data.w1)!=TRUE){ 
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w1",";","age_gr_gender")]]<-working.data.w1 %>%  
   group_by(age_gr, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1614,7 +2005,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","age_gr_gender")]]<-working.data.w2 %>%  
   group_by(age_gr, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1629,7 +2020,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr_gender")]]<-working.data.w3 %>%  
   group_by(age_gr, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1644,7 +2035,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","age_gr_gender")]]<-working.data.w4 %>%  
   group_by(age_gr, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1661,7 +2052,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 
 # by age (fewer groups) and gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                   "0_28",";","age_gr2_gender")]]<-working.data %>%  
+                   "Full",";","age_gr2_gender")]]<-working.data %>%  
   group_by(age_gr2, gender) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1673,14 +2064,14 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 if(is.null(working.data.w1)!=TRUE){ 
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w1",";","age_gr2_gender")]]<-working.data.w1 %>%  
   group_by(age_gr2, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1695,7 +2086,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","gender")]]<-working.data.w2 %>%  
   group_by(age_gr2, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1710,7 +2101,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr2_gender")]]<-working.data.w3 %>%  
   group_by(age_gr2, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1725,7 +2116,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","age_gr2_gender")]]<-working.data.w4 %>%  
   group_by(age_gr2, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1741,7 +2132,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 
 # by age (thrid definition) and gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                    "0_28",";","age_gr3_gender")]]<-working.data %>%  
+                    "Full",";","age_gr3_gender")]]<-working.data %>%  
   group_by(age_gr3, gender) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1753,7 +2144,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 
 if(is.null(working.data.w1)!=TRUE){ 
@@ -1761,7 +2152,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w1",";","age_gr3_gender")]]<-working.data.w1 %>%  
   group_by(age_gr3, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1776,7 +2167,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","age_gr3_gender")]]<-working.data.w2 %>%  
   group_by(age_gr3, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1791,7 +2182,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr3_gender")]]<-working.data.w3 %>%  
   group_by(age_gr3, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1806,7 +2197,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","age_gr3_gender")]]<-working.data.w4 %>%  
   group_by(age_gr3, gender) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1823,7 +2214,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 
 # by age 
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                    "0_28",";","age_gr")]]<-working.data %>%  
+                    "Full",";","age_gr")]]<-working.data %>%  
   group_by(age_gr) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1835,7 +2226,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 
 if(is.null(working.data.w1)!=TRUE){ 
@@ -1843,7 +2234,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w1",";","age_gr")]]<-working.data.w1 %>%  
   group_by(age_gr) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1858,7 +2249,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","age_gr")]]<-working.data.w2 %>%  
   group_by(age_gr) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1873,7 +2264,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr")]]<-working.data.w3 %>%  
   group_by(age_gr) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1888,7 +2279,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","age_gr")]]<-working.data.w4 %>%  
   group_by(age_gr) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1903,7 +2294,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
 
 # by age (fewer groups) and gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                    "0_28",";","age_gr2")]]<-working.data %>%  
+                    "Full",";","age_gr2")]]<-working.data %>%  
   group_by(age_gr2) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1915,7 +2306,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-  mutate(time.window="0_28") %>% 
+  mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
 
 if(is.null(working.data.w1)!=TRUE){ 
@@ -1923,7 +2314,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w1",";","age_gr2")]]<-working.data.w1 %>%  
   group_by(age_gr2) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1938,7 +2329,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","age_gr2")]]<-working.data.w2 %>%  
   group_by(age_gr2) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1953,7 +2344,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr2")]]<-working.data.w3 %>%  
   group_by(age_gr2) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1968,7 +2359,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                            "w4",";","age_gr2")]]<-working.data.w4 %>%  
   group_by(age_gr2) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -1981,10 +2372,10 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(pop=value.working.study.cohort)
 }
 
-if(is.null(working.data.w1)!=TRUE){ 
+
 # by age (thrid definition) and gender
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
-                    "0_28",";","age_gr3")]]<-working.data %>%  
+                    "Full",";","age_gr3")]]<-working.data %>%  
   group_by(age_gr3) %>% 
   summarise(n=length(person_id),
             days=sum(f_u.outcome.days),
@@ -1996,13 +2387,15 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(prior.obs.required=value.prior.obs.required) %>% 
   mutate(pop.type=value.pop.type) %>% 
-   mutate(time.window="0_28") %>% 
+   mutate(time.window="Full") %>% 
   mutate(pop=value.working.study.cohort)
+
+if(is.null(working.data.w1)!=TRUE){ 
 working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
                    "w1",";","age_gr3")]]<-working.data.w1 %>%  
   group_by(age_gr3) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -2017,7 +2410,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w2",";","age_gr3")]]<-working.data.w2 %>%  
   group_by(age_gr3) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -2032,7 +2425,7 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
                    "w3",";","age_gr3")]]<-working.data.w3 %>%  
   group_by(age_gr3) %>% 
   summarise(n=length(person_id),
-            days=sum(f_u.outcome.days),
+            days=sum(tend-tstart),
             years=(days/365.25),
             events=sum(f_u.outcome)) %>% 
   mutate(ir_100000=(events/years)*100000) %>% 
@@ -2043,7 +2436,758 @@ working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.
   mutate(pop.type=value.pop.type) %>% 
   mutate(time.window="w3") %>% 
   mutate(pop=value.working.study.cohort)
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "w4",";","age_gr3")]]<-working.data.w4 %>%  
+  group_by(age_gr3) %>% 
+  summarise(n=length(person_id),
+            days=sum(tend-tstart),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="w4") %>% 
+  mutate(pop=value.working.study.cohort)
+
 }
+
+
+
+# by age_gr, sex, and condition
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr_gender_cond.comp")]]<-working.data %>%  
+  group_by(age_gr, gender, cond.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender_cond.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr_gender_cond.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr_gender_cond.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr_gender_cond.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr_gender_cond.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+# by age_gr, sex, and medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr_gender_drug.comp")]]<-working.data %>%  
+  group_by(age_gr, gender, drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender_drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr_gender_drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr_gender_drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr_gender_drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr_gender_drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+# by age_gr, sex, and condition/ medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr_gender_cond.drug.comp")]]<-working.data %>%  
+  group_by(age_gr, gender, cond.drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr_gender_cond.drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr_gender_cond.drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr_gender_cond.drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr_gender_cond.drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr_gender_cond.drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+
+
+# by age_gr2, sex, and condition
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr2_gender_cond.comp")]]<-working.data %>%  
+  group_by(age_gr2, gender, cond.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender_cond.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr2_gender_cond.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr2, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr2_gender_cond.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr2, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr2_gender_cond.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr2, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr2_gender_cond.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr2, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+# by age_gr2, sex, and medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr2_gender_drug.comp")]]<-working.data %>%  
+  group_by(age_gr2, gender, drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender_drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr2_gender_drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr2, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr2_gender_drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr2, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr2_gender_drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr2, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr2_gender_drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr2, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+# by age_gr2, sex, and condition/ medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr2_gender_cond.drug.comp")]]<-working.data %>%  
+  group_by(age_gr2, gender, cond.drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr2_gender_cond.drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr2_gender_cond.drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr2, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr2_gender_cond.drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr2, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr2_gender_cond.drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr2, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr2_gender_cond.drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr2, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr2_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+
+
+
+
+
+
+# by age_gr3, sex, and condition
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr3_gender_cond.comp")]]<-working.data %>%  
+  group_by(age_gr3, gender, cond.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender_cond.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr3_gender_cond.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr3, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr3_gender_cond.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr3, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr3_gender_cond.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr3, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr3_gender_cond.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr3, gender, cond.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+# by age_gr3, sex, and medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr3_gender_drug.comp")]]<-working.data %>%  
+  group_by(age_gr3, gender, drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender_drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr3_gender_drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr3, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr3_gender_drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr3, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr3_gender_drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr3, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr3_gender_drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr3, gender, drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+# by age_gr3, sex, and condition/ medication
+working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                           "Full",";","age_gr3_gender_cond.drug.comp")]]<-working.data %>%  
+  group_by(age_gr3, gender, cond.drug.comp) %>% 
+  summarise(n=length(person_id),
+            days=sum(f_u.outcome.days),
+            years=(days/365.25),
+            events=sum(f_u.outcome)) %>% 
+  mutate(ir_100000=(events/years)*100000) %>% 
+  mutate(strata="age_gr3_gender_cond.drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(prior.obs.required=value.prior.obs.required) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(time.window="Full") %>% 
+  mutate(pop=value.working.study.cohort)
+if(is.null(working.data.w1)!=TRUE){ 
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w1",";","age_gr3_gender_cond.drug.comp")]]<-working.data.w1 %>%  
+    group_by(age_gr3, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>%  
+    mutate(time.window="w1") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w2",";","age_gr3_gender_cond.drug.comp")]]<-working.data.w2 %>%  
+    group_by(age_gr3, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w2") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w3",";","age_gr3_gender_cond.drug.comp")]]<-working.data.w3 %>%  
+    group_by(age_gr3, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w3") %>% 
+    mutate(pop=value.working.study.cohort)
+  working.IR.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,";",
+                             "w4",";","age_gr3_gender_cond.drug.comp")]]<-working.data.w4 %>%  
+    group_by(age_gr3, gender, cond.drug.comp) %>% 
+    summarise(n=length(person_id),
+              days=sum(tend-tstart),
+              years=(days/365.25),
+              events=sum(f_u.outcome)) %>% 
+    mutate(ir_100000=(events/years)*100000) %>% 
+    mutate(strata="age_gr3_gender_cond.drug.comp") %>% 
+    mutate(outcome=value.working.outcome) %>% 
+    mutate(outcome.name=value.working.outcome.name) %>% 
+    mutate(prior.obs.required=value.prior.obs.required) %>% 
+    mutate(pop.type=value.pop.type) %>% 
+    mutate(time.window="w4") %>% 
+    mutate(pop=value.working.study.cohort)
+}
+
+
+
+
+
+
+
+
+
 
 
 # return
@@ -2308,6 +3452,61 @@ working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.ou
               upper=s$upper,
               group=s$strata)%>% 
   mutate(strata="gender") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ cond.comp, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","cond.comp")]]<-data.frame(
+                                   time=s$time,
+                                   n.risk=s$n.risk,
+                                   n.event= s$n.event,
+                                   surv=s$surv,
+                                   lower=s$lower,
+                                   upper=s$upper,
+                                   group=s$strata)%>% 
+  mutate(strata="cond.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ drug.comp, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","drug.comp")]]<-data.frame(
+                                   time=s$time,
+                                   n.risk=s$n.risk,
+                                   n.event= s$n.event,
+                                   surv=s$surv,
+                                   lower=s$lower,
+                                   upper=s$upper,
+                                   group=s$strata)%>% 
+  mutate(strata="drug.comp") %>% 
+  mutate(outcome=value.working.outcome) %>% 
+  mutate(outcome.name=value.working.outcome.name) %>% 
+  mutate(pop.type=value.pop.type) %>% 
+  mutate(prior.obs.required=value.prior.obs.required)  %>% 
+  mutate(pop=value.working.study.cohort)
+
+s<-summary(survfit(Surv(f_u.outcome.days, f_u.outcome) ~ cond.drug.comp, 
+                   data = working.data), times = working.times)
+working.Survival.summary[[paste0(value.working.study.cohort,";",value.working.outcome.name,
+                                 ";","cond.drug.comp")]]<-data.frame(
+                                   time=s$time,
+                                   n.risk=s$n.risk,
+                                   n.event= s$n.event,
+                                   surv=s$surv,
+                                   lower=s$lower,
+                                   upper=s$upper,
+                                   group=s$strata)%>% 
+  mutate(strata="cond.drug.comp") %>% 
   mutate(outcome=value.working.outcome) %>% 
   mutate(outcome.name=value.working.outcome.name) %>% 
   mutate(pop.type=value.pop.type) %>% 
@@ -2741,27 +3940,10 @@ if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
 Survival.summary<-bind_rows(Survival.summary, .id = NULL)
 Survival.summary$db<-db.name
 Survival.summary<-Survival.summary %>% 
-  group_by(group, strata, outcome,pop.type,
+  group_by(group, strata, outcome,pop, pop.type,
            outcome.name,prior.obs.required) %>% 
   mutate(cum.n.event=cumsum(n.event))
 }
-
-#obscure events less than five
-IR.summary<-IR.summary %>% 
-  mutate(events=ifelse(events<5, "<5",events))  %>% 
-  mutate(ir_100000=ifelse(events=="<5",NA,ir_100000))
-
-if(run.vax.cohorts==TRUE | run.covid.cohorts==TRUE){
-Survival.summary<-Survival.summary %>% 
-  mutate(n.event=ifelse(n.event<5, "<5",n.event)) %>% 
-  mutate(cum.n.event=ifelse(cum.n.event<5, "<5",cum.n.event)) %>% 
-  mutate(surv=ifelse(cum.n.event=="<5",NA,surv)) %>% 
-  mutate(lower=ifelse(cum.n.event=="<5",NA,lower)) %>% 
-  mutate(upper=ifelse(cum.n.event=="<5",NA,upper)) 
-}
-
-
-
 
 # save ----
 save(IR.summary, file = paste0(output.folder, "/IR.summary_", db.name, ".RData"))
